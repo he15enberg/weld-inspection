@@ -1,10 +1,9 @@
-// Live weld segmentation, and a Measure action that shows a 2-D colourised
-// depth map.
+// Live weld segmentation, and a Measure action that captures four views of one
+// moment: the RGB frame, the model's overlay of it, the LiDAR depth map, and a
+// full-frame RGB point cloud.
 //
-// Neither measurement nor the 3-D point cloud is wired in: this build exists to
-// prove the LiDAR capture itself. Both are intact and commented out --
-// measurement.dart holds the tested maths, point_cloud.dart / point_cloud_view
-// .dart hold the 3-D path. Search "POINT CLOUD (disabled)" to re-enable.
+// Measurement is still not wired in -- measurement.dart holds the tested maths
+// for when it comes back.
 //
 // The one structural constraint: YOLOView owns the camera, and ARKit also wants
 // to own it. They cannot run at the same time. So pressing Measure UNMOUNTS
@@ -12,15 +11,16 @@
 // depth capture. That is what `_Mode` exists to sequence.
 
 import 'dart:io' show Platform;
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 
+import 'capture.dart';
 import 'depth_source.dart';
 import 'measure_screen.dart';
-// --- POINT CLOUD (disabled) ---
-// import 'point_cloud.dart';
+import 'point_cloud.dart';
 
 /// Both trained models ship in assets; switch by changing [activeModel].
 ///
@@ -85,10 +85,12 @@ class _HomePageState extends State<HomePage> {
   // newest live detections, shown as a count on the live view
   List<YOLOResult> _live = const [];
 
-  DepthFrame? _frame;
+  Capture? _capture;
 
-  // --- POINT CLOUD (disabled) ---
-  // PointCloud _cloud = PointCloud.empty;
+  /// Second model instance for single-image inference. YOLOView owns its own
+  /// copy for the live view; this one annotates the captured still. Created
+  /// lazily so a user who never presses Measure never pays for it.
+  YOLO? _still;
 
   void _onResult(List<YOLOResult> results) {
     if (!mounted || _mode != _Mode.live) return;
@@ -107,14 +109,41 @@ class _HomePageState extends State<HomePage> {
       setState(() => _status = 'Capturing depth…');
       final frame = await _depth.capture();
 
-      // --- POINT CLOUD (disabled) ---
-      // setState(() => _status = 'Building point cloud…');
-      // final cloud = await buildCloud(frame);
+      setState(() => _status = 'Building point cloud…');
+      final cloud = await buildCloud(frame);
+
+      Uint8List? annotated;
+      var detections = 0;
+      String? annotateError;
+
+      if (frame.jpeg != null) {
+        setState(() => _status = 'Running segmentation…');
+        try {
+          _still ??= YOLO(modelPath: modelPath, task: YOLOTask.segment);
+          final result = await _still!.predict(frame.jpeg!);
+          annotated = result['annotatedImage'] as Uint8List?;
+          detections = (result['detections'] as List?)?.length ?? 0;
+          if (annotated == null) {
+            annotateError = 'The model returned no annotated image.';
+          }
+        } catch (e) {
+          // annotation is a nice-to-have; never fail the whole capture for it
+          annotateError = 'Segmentation failed: $e';
+        }
+      } else {
+        annotateError = 'No RGB frame was captured, so nothing to annotate.';
+      }
 
       if (!mounted) return;
       setState(() {
-        _frame = frame;
-        // _cloud = cloud;
+        _capture = Capture(
+          frame: frame,
+          cloud: cloud,
+          rgb: frame.jpeg,
+          annotated: annotated,
+          detections: detections,
+          annotateError: annotateError,
+        );
         _mode = _Mode.result;
       });
     } catch (e) {
@@ -128,8 +157,7 @@ class _HomePageState extends State<HomePage> {
 
   void _backToLive() => setState(() {
         _mode = _Mode.live;
-        _frame = null;
-        // _cloud = PointCloud.empty;
+        _capture = null;
       });
 
   @override
@@ -155,9 +183,8 @@ class _HomePageState extends State<HomePage> {
 
       case _Mode.result:
         return MeasureScreen(
-          frame: _frame!,
+          capture: _capture!,
           onClose: _backToLive,
-          // cloud: _cloud,
         );
 
       case _Mode.live:

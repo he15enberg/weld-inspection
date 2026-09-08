@@ -62,6 +62,17 @@ class DepthStats {
   double get fill => total == 0 ? 0 : valid / total;
 }
 
+/// Quarter-turns applied when displaying anything that came off the camera.
+///
+/// ARKit hands back both the depth buffer and the captured image in the rear
+/// camera's NATIVE landscape orientation, whatever way the phone is held, so
+/// every 2-D view needs the same correction.
+///
+/// 1 = 90 degrees clockwise, correct for a portrait app (the same as UIImage
+/// orientation .right). Use 3 if images come out upside down, 0 if the app is
+/// locked to landscape.
+const cameraQuarterTurns = 1;
+
 /// Physically plausible range for ARKit sceneDepth, in metres.
 ///
 /// Usable range is roughly 0.25–5 m. Gating on it is not cosmetic: it means a
@@ -195,11 +206,23 @@ class _DepthMapViewState extends State<DepthMapView> {
           Positioned.fill(
             child: InteractiveViewer(
               maxScale: 8,
-              child: RawImage(
-                image: image,
-                fit: BoxFit.contain,
-                filterQuality:
-                    _smooth ? FilterQuality.medium : FilterQuality.none,
+              // ARKit hands back the depth buffer in the camera's NATIVE
+              // orientation -- landscape, 256x192 -- no matter how the phone is
+              // held. Rendered raw in a portrait app it therefore looks rotated
+              // 90 degrees. One clockwise quarter-turn puts it upright, the same
+              // correction as UIImage orientation .right.
+              //
+              // Display only: the depth array and the intrinsics (fx, fy, cx,
+              // cy) both describe the landscape frame, so rotating the data
+              // would mean swapping the intrinsics too.
+              child: RotatedBox(
+                quarterTurns: cameraQuarterTurns,
+                child: RawImage(
+                  image: image,
+                  fit: BoxFit.contain,
+                  filterQuality:
+                      _smooth ? FilterQuality.medium : FilterQuality.none,
+                ),
               ),
             ),
           ),
