@@ -1,76 +1,91 @@
-// A small orbiting point cloud viewer.
+// Orbiting RGB point cloud viewer.
 //
-// A few thousand points do not need a 3-D engine. This rotates and projects by
-// hand and draws with canvas.drawRawPoints, which keeps it dependency-free and
-// short. Points are coloured in depth bands -- drawRawPoints takes one Paint,
-// so per-point colour means one call per band.
+// Per-point colour rules out drawRawPoints, which takes a single Paint. This
+// uses drawRawAtlas instead: one draw call, a white sprite tinted per instance,
+// which is what that API exists for.
 
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' show PointMode;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
-const _bandColors = [
-  Color(0xFF3B4CC0),
-  Color(0xFF6788EE),
-  Color(0xFF9ABBFF),
-  Color(0xFFC9D7F0),
-  Color(0xFFF2CBB7),
-  Color(0xFFEE8468),
-  Color(0xFFB40426),
-];
+import 'point_cloud.dart';
 
 class PointCloudView extends StatefulWidget {
-  const PointCloudView({super.key, required this.points, this.overlays = const []});
+  const PointCloudView({super.key, required this.cloud, this.pointSize = 3.0});
 
-  /// Packed x,y,z triples in metres, camera space.
-  final Float32List points;
-
-  /// Boxes to draw into the cloud, in normalized image coords at a distance.
-  final List<CloudBox> overlays;
+  final PointCloud cloud;
+  final double pointSize;
 
   @override
   State<PointCloudView> createState() => _PointCloudViewState();
 }
 
-/// A detection box placed in the cloud at its measured distance.
-class CloudBox {
-  const CloudBox({required this.rect, required this.z, required this.color});
-  final Rect rect; // normalized 0..1
-  final double z; // metres
-  final Color color;
-}
-
 class _PointCloudViewState extends State<PointCloudView> {
-  double _yaw = 0.35;
-  double _pitch = -0.25;
+  double _yaw = 0.0;
+  double _pitch = 0.0;
   double _zoom = 1.0;
   double _zoomStart = 1.0;
 
+  ui.Image? _sprite;
+
+  @override
+  void initState() {
+    super.initState();
+    _makeSprite();
+  }
+
+  /// A single opaque white pixel. drawRawAtlas tints it per point, so the
+  /// sprite carries no colour of its own. 1x1 keeps the transform maths
+  /// trivial: the RSTransform scale is then the point size in pixels.
+  Future<void> _makeSprite() async {
+    final pixels = Uint8List.fromList(const [255, 255, 255, 255]);
+    ui.decodeImageFromPixels(pixels, 1, 1, ui.PixelFormat.rgba8888, (img) {
+      if (mounted) setState(() => _sprite = img);
+    });
+  }
+
+  @override
+  void dispose() {
+    _sprite?.dispose();
+    super.dispose();
+  }
+
+  void _reset() => setState(() {
+        _yaw = 0.0;
+        _pitch = 0.0;
+        _zoom = 1.0;
+      });
+
   @override
   Widget build(BuildContext context) {
+    if (widget.cloud.isEmpty) {
+      return const Center(
+        child: Text('No depth in this frame',
+            style: TextStyle(color: Colors.white38)),
+      );
+    }
+    if (_sprite == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
     return GestureDetector(
       onScaleStart: (_) => _zoomStart = _zoom,
-      onScaleUpdate: (d) {
-        setState(() {
-          if (d.pointerCount > 1) {
-            _zoom = (_zoomStart * d.scale).clamp(0.3, 6.0);
-          } else {
-            _yaw += d.focalPointDelta.dx * 0.008;
-            _pitch = (_pitch + d.focalPointDelta.dy * 0.008).clamp(-1.4, 1.4);
-          }
-        });
-      },
-      onDoubleTap: () => setState(() {
-        _yaw = 0.35;
-        _pitch = -0.25;
-        _zoom = 1.0;
+      onScaleUpdate: (d) => setState(() {
+        if (d.pointerCount > 1) {
+          _zoom = (_zoomStart * d.scale).clamp(0.2, 12.0);
+        } else {
+          _yaw += d.focalPointDelta.dx * 0.008;
+          _pitch = (_pitch + d.focalPointDelta.dy * 0.008).clamp(-1.5, 1.5);
+        }
       }),
+      onDoubleTap: _reset,
       child: CustomPaint(
         painter: _CloudPainter(
-          points: widget.points,
-          overlays: widget.overlays,
+          cloud: widget.cloud,
+          sprite: _sprite!,
+          pointSize: widget.pointSize,
           yaw: _yaw,
           pitch: _pitch,
           zoom: _zoom,
@@ -83,130 +98,114 @@ class _PointCloudViewState extends State<PointCloudView> {
 
 class _CloudPainter extends CustomPainter {
   _CloudPainter({
-    required this.points,
-    required this.overlays,
+    required this.cloud,
+    required this.sprite,
+    required this.pointSize,
     required this.yaw,
     required this.pitch,
     required this.zoom,
   });
 
-  final Float32List points;
-  final List<CloudBox> overlays;
+  final PointCloud cloud;
+  final ui.Image sprite;
+  final double pointSize;
   final double yaw, pitch, zoom;
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (points.length < 3) return;
+    final n = cloud.count;
+    if (n == 0) return;
 
-    // centre the cloud on its own centroid so rotation feels natural
+    final p = cloud.xyz;
+
+    // centroid and full bounding box in one pass
     var cx = 0.0, cy = 0.0, cz = 0.0;
-    var zMin = double.infinity, zMax = -double.infinity;
-    final n = points.length ~/ 3;
+    var minX = double.infinity, maxX = -double.infinity;
+    var minY = double.infinity, maxY = -double.infinity;
+    var minZ = double.infinity, maxZ = -double.infinity;
+
     for (var i = 0; i < n; i++) {
-      cx += points[i * 3];
-      cy += points[i * 3 + 1];
-      final z = points[i * 3 + 2];
+      final x = p[i * 3], y = p[i * 3 + 1], z = p[i * 3 + 2];
+      cx += x;
+      cy += y;
       cz += z;
-      if (z < zMin) zMin = z;
-      if (z > zMax) zMax = z;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
     }
     cx /= n;
     cy /= n;
     cz /= n;
 
+    // Frame on the LARGEST dimension of the bounding box, not the depth range.
+    // Scaling by depth spread alone collapses a flat plate to a dot when the
+    // background is far away, and blows it off-screen when it is not.
+    final extent = math.max(
+      math.max(maxX - minX, maxY - minY),
+      math.max(maxZ - minZ, 1e-3),
+    );
+    final scale = size.shortestSide * 0.8 * zoom / extent;
+
     final cosY = math.cos(yaw), sinY = math.sin(yaw);
     final cosP = math.cos(pitch), sinP = math.sin(pitch);
-
-    // scale so the cloud fills the viewport at zoom 1
-    final spread = math.max(zMax - zMin, 0.02);
-    final scale = size.shortestSide * 0.9 * zoom / (spread * 6);
     final originX = size.width / 2, originY = size.height / 2;
 
-    // one bucket per colour band, since drawRawPoints takes a single Paint
-    final buckets = List.generate(_bandColors.length, (_) => <double>[]);
+    final half = pointSize * 0.5;
+    final transforms = Float32List(n * 4);
+    final rects = Float32List(n * 4);
+    final colors = Int32List(n);
 
+    var kept = 0;
     for (var i = 0; i < n; i++) {
-      final p = _project(
-        points[i * 3] - cx,
-        points[i * 3 + 1] - cy,
-        points[i * 3 + 2] - cz,
-        cosY, sinY, cosP, sinP, scale, originX, originY,
-      );
-      if (p == null) continue;
+      final x = p[i * 3] - cx;
+      final y = p[i * 3 + 1] - cy;
+      final z = p[i * 3 + 2] - cz;
 
-      final t = ((points[i * 3 + 2] - zMin) / spread).clamp(0.0, 0.999);
-      final band = (t * _bandColors.length).floor();
-      buckets[band]..add(p.dx)..add(p.dy);
+      // yaw about Y, then pitch about X
+      final x1 = x * cosY + z * sinY;
+      final z1 = -x * sinY + z * cosY;
+      final y2 = y * cosP - z1 * sinP;
+      final z2 = y * sinP + z1 * cosP;
+
+      // weak perspective: a depth cue without a full camera model
+      final d = 1.0 + z2 / extent * 0.6;
+      if (d <= 0.05) continue;
+
+      final sxp = originX + x1 * scale / d;
+      final syp = originY + y2 * scale / d;
+      if (sxp.isNaN || syp.isNaN) continue;
+
+      final o = kept * 4;
+      // RSTransform, no rotation: [scos, ssin, tx, ty]. With a 1x1 atlas the
+      // scale IS the on-screen point size; tx/ty centre it on the projection.
+      transforms[o] = pointSize;
+      transforms[o + 1] = 0.0;
+      transforms[o + 2] = sxp - half;
+      transforms[o + 3] = syp - half;
+
+      // source rect inside the atlas, not the destination size
+      rects[o] = 0;
+      rects[o + 1] = 0;
+      rects[o + 2] = 1;
+      rects[o + 3] = 1;
+
+      colors[kept] = cloud.argb[i];
+      kept++;
     }
+    if (kept == 0) return;
 
-    final paint = Paint()..strokeWidth = 2.2..strokeCap = StrokeCap.round;
-    for (var b = 0; b < buckets.length; b++) {
-      if (buckets[b].isEmpty) continue;
-      paint.color = _bandColors[b];
-      canvas.drawRawPoints(
-        PointMode.points,
-        Float32List.fromList(buckets[b]),
-        paint,
-      );
-    }
-
-    _paintOverlays(canvas, cx, cy, cz, cosY, sinY, cosP, sinP, scale, originX, originY);
-  }
-
-  /// Detection boxes, placed in the cloud at their measured distance.
-  void _paintOverlays(
-    Canvas canvas,
-    double cx, double cy, double cz,
-    double cosY, double sinY, double cosP, double sinP,
-    double scale, double originX, double originY,
-  ) {
-    for (final box in overlays) {
-      // normalized image coords -> camera space at distance z, using the same
-      // half-FOV relation the measurement maths uses
-      final corners = <Offset?>[];
-      for (final c in [
-        Offset(box.rect.left, box.rect.top),
-        Offset(box.rect.right, box.rect.top),
-        Offset(box.rect.right, box.rect.bottom),
-        Offset(box.rect.left, box.rect.bottom),
-      ]) {
-        final x = (c.dx - 0.5) * box.z * 1.5;
-        final y = (c.dy - 0.5) * box.z * 1.5 * 0.75;
-        corners.add(_project(x - cx, y - cy, box.z - cz,
-            cosY, sinY, cosP, sinP, scale, originX, originY));
-      }
-      if (corners.any((c) => c == null)) continue;
-
-      final path = Path()..moveTo(corners[0]!.dx, corners[0]!.dy);
-      for (var i = 1; i < corners.length; i++) {
-        path.lineTo(corners[i]!.dx, corners[i]!.dy);
-      }
-      path.close();
-      canvas.drawPath(
-        path,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2
-          ..color = box.color,
-      );
-    }
-  }
-
-  Offset? _project(
-    double x, double y, double z,
-    double cosY, double sinY, double cosP, double sinP,
-    double scale, double originX, double originY,
-  ) {
-    // yaw about Y, then pitch about X
-    final x1 = x * cosY + z * sinY;
-    final z1 = -x * sinY + z * cosY;
-    final y2 = y * cosP - z1 * sinP;
-    final z2 = y * sinP + z1 * cosP;
-
-    // weak perspective: enough depth cue without a full camera model
-    final d = 1.0 + z2 * 1.2;
-    if (d <= 0.05) return null;
-    return Offset(originX + x1 * scale / d, originY + y2 * scale / d);
+    canvas.drawRawAtlas(
+      sprite,
+      Float32List.sublistView(transforms, 0, kept * 4),
+      Float32List.sublistView(rects, 0, kept * 4),
+      Int32List.sublistView(colors, 0, kept),
+      BlendMode.modulate, // white sprite x colour = colour
+      null,
+      Paint()..filterQuality = FilterQuality.none,
+    );
   }
 
   @override
@@ -214,6 +213,6 @@ class _CloudPainter extends CustomPainter {
       old.yaw != yaw ||
       old.pitch != pitch ||
       old.zoom != zoom ||
-      old.points != points ||
-      old.overlays != overlays;
+      old.cloud != cloud ||
+      old.sprite != sprite;
 }

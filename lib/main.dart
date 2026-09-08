@@ -1,5 +1,9 @@
-// Live weld segmentation, and a Measure action that returns a point cloud plus
-// a height and width for every detection.
+// Live weld segmentation, and a Measure action that returns a full-frame RGB
+// point cloud.
+//
+// Measurement is deliberately not wired in yet: this build exists to prove the
+// depth capture and the 3-D view. measurement.dart still holds the tested maths
+// for when it comes back.
 //
 // The one structural constraint: YOLOView owns the camera, and ARKit also wants
 // to own it. They cannot run at the same time. So pressing Measure UNMOUNTS
@@ -7,7 +11,6 @@
 // depth capture. That is what `_Mode` exists to sequence.
 
 import 'dart:io' show Platform;
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -15,7 +18,7 @@ import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 
 import 'depth_source.dart';
 import 'measure_screen.dart';
-import 'measurement.dart';
+import 'point_cloud.dart';
 
 /// Both trained models ship in assets; switch by changing [activeModel].
 ///
@@ -25,8 +28,8 @@ import 'measurement.dart';
 ///   v2 - 7 classes, trained on the 36-image data-40 set  <- current
 ///        crack, overlap, porosity, spatter, undercut, weld_seam, workpiece
 ///
-/// Class names differ between them, so measure_screen.dart's classColors must
-/// match whichever is active or detections fall back to grey.
+/// Class names differ between them, so anything that colours detections by
+/// label must match whichever is active.
 enum WeldModel {
   v1('weld_v1_8cls'),
   v2('weld_v2_7cls');
@@ -77,12 +80,11 @@ class _HomePageState extends State<HomePage> {
   _Mode _mode = _Mode.live;
   String _status = '';
 
-  // newest live detections, kept so Measure has something to size
+  // newest live detections, shown as a count on the live view
   List<YOLOResult> _live = const [];
 
   DepthFrame? _frame;
-  Float32List _points = Float32List(0);
-  List<Measured> _measured = const [];
+  PointCloud _cloud = PointCloud.empty;
 
   void _onResult(List<YOLOResult> results) {
     if (!mounted || _mode != _Mode.live) return;
@@ -90,11 +92,6 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _measure() async {
-    final detections = [
-      for (final r in _live)
-        (label: r.className, confidence: r.confidence, box: r.normalizedBox),
-    ];
-
     // unmount YOLOView first: ARKit cannot open the camera while it is held
     setState(() {
       _mode = _Mode.capturing;
@@ -106,15 +103,13 @@ class _HomePageState extends State<HomePage> {
       setState(() => _status = 'Capturing depth…');
       final frame = await _depth.capture();
 
-      setState(() => _status = 'Measuring…');
-      final points = unproject(frame, step: 2);
-      final measured = measureAll(frame, detections);
+      setState(() => _status = 'Building point cloud…');
+      final cloud = await buildCloud(frame);
 
       if (!mounted) return;
       setState(() {
         _frame = frame;
-        _points = points;
-        _measured = measured;
+        _cloud = cloud;
         _mode = _Mode.result;
       });
     } catch (e) {
@@ -128,8 +123,7 @@ class _HomePageState extends State<HomePage> {
 
   void _backToLive() => setState(() {
         _mode = _Mode.live;
-        _points = Float32List(0);
-        _measured = const [];
+        _cloud = PointCloud.empty;
       });
 
   @override
@@ -139,9 +133,8 @@ class _HomePageState extends State<HomePage> {
       body: SafeArea(child: _body()),
       floatingActionButton: _mode == _Mode.live
           ? FloatingActionButton.extended(
-              onPressed: _live.isEmpty ? null : _measure,
-              backgroundColor:
-                  _live.isEmpty ? Colors.grey.shade800 : const Color(0xFF2F7FF0),
+              onPressed: _measure,
+              backgroundColor: const Color(0xFF2F7FF0),
               icon: const Icon(Icons.straighten),
               label: const Text('Measure'),
             )
@@ -157,8 +150,7 @@ class _HomePageState extends State<HomePage> {
       case _Mode.result:
         return MeasureScreen(
           frame: _frame!,
-          points: _points,
-          measured: _measured,
+          cloud: _cloud,
           onClose: _backToLive,
         );
 
