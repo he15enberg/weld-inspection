@@ -62,6 +62,17 @@ class DepthStats {
   double get fill => total == 0 ? 0 : valid / total;
 }
 
+/// Physically plausible range for ARKit sceneDepth, in metres.
+///
+/// Usable range is roughly 0.25–5 m. Gating on it is not cosmetic: it means a
+/// mis-decoded buffer reads as "0% of pixels have depth" instead of rendering
+/// as a convincing field of noise.
+const _minDepth = 0.05;
+const _maxDepth = 20.0;
+
+bool _plausible(double z) =>
+    z.isFinite && z >= _minDepth && z <= _maxDepth;
+
 /// Colourise a depth frame into an image plus the range it was scaled over.
 Future<({ui.Image image, DepthStats stats})> colouriseDepth(
   DepthFrame frame,
@@ -70,8 +81,7 @@ Future<({ui.Image image, DepthStats stats})> colouriseDepth(
 
   final valid = <double>[];
   for (var i = 0; i < depth.length; i++) {
-    final z = depth[i];
-    if (z > 0 && z.isFinite) valid.add(z);
+    if (_plausible(depth[i])) valid.add(depth[i]);
   }
   valid.sort();
 
@@ -84,7 +94,7 @@ Future<({ui.Image image, DepthStats stats})> colouriseDepth(
   for (var i = 0; i < depth.length; i++) {
     final o = i * 4;
     final z = depth[i];
-    if (z <= 0 || !z.isFinite) {
+    if (!_plausible(z)) {
       // no reading: near-black, so holes are obvious rather than blended in
       pixels[o] = 16;
       pixels[o + 1] = 18;

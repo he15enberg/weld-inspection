@@ -83,7 +83,7 @@ Future<PointCloud> buildCloud(DepthFrame frame, {int step = 1}) async {
   var zMin = double.infinity, zMax = -double.infinity;
   for (var i = 0; i < frame.depth.length; i++) {
     final z = frame.depth[i];
-    if (z > 0 && z.isFinite) {
+    if (_plausible(z)) {
       if (z < zMin) zMin = z;
       if (z > zMax) zMax = z;
     }
@@ -93,7 +93,7 @@ Future<PointCloud> buildCloud(DepthFrame frame, {int step = 1}) async {
   for (var v = 0; v < frame.height; v += step) {
     for (var u = 0; u < frame.width; u += step) {
       final z = frame.depth[v * frame.width + u];
-      if (z <= 0 || !z.isFinite) continue;
+      if (!_plausible(z)) continue;
 
       xs.add((u - cx) / fx * z);
       xs.add((v - cy) / fy * z);
@@ -120,6 +120,13 @@ Future<PointCloud> buildCloud(DepthFrame frame, {int step = 1}) async {
     coloured: rgb != null,
   );
 }
+
+/// Physically plausible range for ARKit sceneDepth, in metres. A mis-decoded
+/// buffer then yields an empty cloud rather than a convincing noise field.
+const _minDepth = 0.05;
+const _maxDepth = 20.0;
+
+bool _plausible(double z) => z.isFinite && z >= _minDepth && z <= _maxDepth;
 
 /// Fallback ramp when there is no RGB frame: cool near, warm far.
 int _depthColour(double t) {

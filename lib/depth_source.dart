@@ -66,10 +66,7 @@ class DepthFrame {
     double d(String k) => (map[k] as num).toDouble();
     int i(String k) => (map[k] as num).toInt();
 
-    final raw = map['depth'];
-    final depth = raw is Float32List
-        ? raw
-        : Float32List.view((raw as Uint8List).buffer, 0, (raw).lengthInBytes ~/ 4);
+    final depth = _asFloat32(map['depth']);
 
     return DepthFrame(
       width: i('width'),
@@ -85,6 +82,32 @@ class DepthFrame {
       jpeg: map['jpeg'] as Uint8List?,
     );
   }
+}
+
+/// Coerce a channel value into a Float32List.
+///
+/// The native side sends float32, so the first branch is the normal path. The
+/// byte fallback exists for older payloads and must respect `offsetInBytes`:
+/// a Uint8List from a platform channel is a *view* into a larger buffer, so
+/// reinterpreting from offset 0 reads the message header and yields garbage —
+/// depths in the 1e18 range and a screen of noise.
+Float32List _asFloat32(Object? raw) {
+  if (raw is Float32List) return raw;
+  if (raw is Float64List) return Float32List.fromList(raw);
+  if (raw is Uint8List) {
+    final count = raw.lengthInBytes ~/ 4;
+    // Float32List.view also demands 4-byte alignment; copy when it is not met
+    if (raw.offsetInBytes % 4 == 0) {
+      return Float32List.view(raw.buffer, raw.offsetInBytes, count);
+    }
+    final out = Float32List(count);
+    final bytes = ByteData.sublistView(raw);
+    for (var i = 0; i < count; i++) {
+      out[i] = bytes.getFloat32(i * 4, Endian.little);
+    }
+    return out;
+  }
+  throw DepthUnavailable('unexpected depth payload: ${raw.runtimeType}');
 }
 
 class DepthUnavailable implements Exception {

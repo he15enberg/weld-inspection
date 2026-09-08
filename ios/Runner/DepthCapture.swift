@@ -124,7 +124,11 @@ final class DepthCapture: NSObject, ARSessionDelegate {
         var payload: [String: Any] = [
             "width": width,
             "height": height,
-            "depth": FlutterStandardTypedData(bytes: depthData),
+            // float32, NOT bytes: sending raw bytes forces Dart to reinterpret
+            // them, and a channel Uint8List is a view into a larger buffer with
+            // a non-zero offset, so that reinterpretation reads the message
+            // header instead of the depth. This arrives as a Float32List.
+            "depth": FlutterStandardTypedData(float32: depthData),
             "confidence": FlutterStandardTypedData(bytes: confidenceData),
             "fx": Double(k.columns.0.x),
             "fy": Double(k.columns.1.y),
