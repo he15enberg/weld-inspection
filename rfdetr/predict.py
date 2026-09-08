@@ -1,0 +1,142 @@
+"""Run a trained RF-DETR Seg checkpoint over a folder of images.
+
+Mirrors ../yolo/predict.py and shares its drawing code, so the two models'
+outputs can be compared frame by frame.
+
+Two RF-DETR specifics this handles:
+
+1. **Class names are not in the checkpoint.** `class_names` comes back None, so
+   the id -> name mapping is rebuilt the way training built it: the annotated
+   categories, filtered and sorted, enumerated from 0. CLASSES below is that
+   list for the data-40 run; it is asserted against the model's num_classes so a
+   checkpoint with a different head fails loudly instead of mislabelling
+   everything.
+
+2. **RGB, not BGR.** predict() wants RGB; cv2 gives BGR. Getting this wrong
+   costs accuracy silently rather than erroring.
+
+Needs the RF-DETR venv:
+
+    D:\\hackathon\\.venv-rfdetr\\Scripts\\python.exe train\\rfdetr\\predict.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import sys
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))          # train/overlay.py
+import overlay                                 # noqa: E402
+
+REPO = HERE.parents[1]
+CKPT = HERE / "runs" / "rfdetr_seg_small_data40" / "checkpoint_best_ema.pth"
+
+# data-40 label space: 0-based, the order training derived from the COCO
+# categories (ids 1..7, alphabetical). NOT the dataset-combined list -- that one
+# inserts `discontinuity` at index 1 and shifts everything after it.
+CLASSES = ["crack", "overlap", "porosity", "spatter", "undercut",
+           "weld_seam", "workpiece"]
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ckpt", default=str(CKPT))
+    ap.add_argument("--source", default=str(REPO / "welds" / "welds"))
+    ap.add_argument("--out", default=str(HERE / "runs" / "predictions"))
+    ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--res", type=int, default=0, help="0 = the model's own resolution")
+    ap.add_argument("--size", type=int, default=1600, help="longest side of the output")
+    ap.add_argument("--only", help="draw just this class")
+    args = ap.parse_args()
+
+    from rfdetr import RFDETR
+
+    model = RFDETR.from_checkpoint(args.ckpt, trust_checkpoint=True)
+    cfg = model.model_config
+    nc = getattr(cfg, "num_classes", len(CLASSES))
+    if nc != len(CLASSES):
+        raise SystemExit(
+            f"checkpoint head has {nc} classes but CLASSES lists {len(CLASSES)}.\n"
+            f"This script is pinned to the data-40 label space; a combined-dataset\n"
+            f"checkpoint needs the 8-class list instead."
+        )
+    res = args.res or getattr(cfg, "resolution", 1272)
+    shape = (res, res)
+
+    src, out_dir = Path(args.source), Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    images = sorted(p for p in src.iterdir()
+                    if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"})
+    if not images:
+        raise SystemExit(f"no images in {src}")
+
+    print(f"{type(model).__name__}  |  {len(images)} images  |  conf {args.conf}"
+          f"  |  res {res}  |  {nc} classes\n")
+
+    totals: collections.Counter = collections.Counter()
+    empty: list[str] = []
+
+    for p in images:
+        bgr = cv2.imread(str(p))
+        if bgr is None:
+            print(f"  ! unreadable: {p.name}")
+            continue
+
+        det = model.predict(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB),
+                            threshold=args.conf, shape=shape,
+                            include_source_image=False)
+
+        dets = []
+        masks = getattr(det, "mask", None)
+        for i in range(len(det)):
+            label = CLASSES[int(det.class_id[i])]
+            if args.only and label != args.only:
+                continue
+            conf = float(det.confidence[i])
+            if masks is not None:
+                m = masks[i]
+                if m.shape[:2] != bgr.shape[:2]:      # decoded at model res
+                    m = cv2.resize(m.astype(np.uint8), (bgr.shape[1], bgr.shape[0]),
+                                   interpolation=cv2.INTER_NEAREST)
+                polys = overlay.mask_to_polys(m)
+            else:                                      # box-only fallback
+                x0, y0, x1, y1 = det.xyxy[i].astype(np.int32)
+                polys = [np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], np.int32)]
+            for poly in polys:
+                dets.append((label, poly, conf))
+
+        # count instances, not contours: one mask can break into several pieces
+        tally = collections.Counter()
+        for i in range(len(det)):
+            label = CLASSES[int(det.class_id[i])]
+            if not args.only or label == args.only:
+                tally[label] += 1
+        totals.update(tally)
+        if not tally:
+            empty.append(p.name)
+
+        summary = ", ".join(f"{c} x{n}" for c, n in tally.most_common()) or "nothing detected"
+        drawn = overlay.banner(overlay.fit(overlay.draw(bgr, dets), args.size),
+                               f"{p.name}  |  {summary}")
+        cv2.imwrite(str(out_dir / f"{p.stem}.jpg"), drawn, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        print(f"  {p.name[:34]:<36} {summary}")
+
+    print(f"\n{'class':<16}{'detections':>12}")
+    print("-" * 28)
+    for c, n in totals.most_common():
+        print(f"  {c:<14}{n:>12}")
+    print("-" * 28)
+    print(f"  {'TOTAL':<14}{sum(totals.values()):>12}")
+    if empty:
+        print(f"\nnothing detected in {len(empty)}: {empty}")
+    print(f"\nannotated -> {out_dir}")
+
+
+if __name__ == "__main__":
+    main()
