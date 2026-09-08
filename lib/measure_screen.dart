@@ -8,15 +8,16 @@ import 'depth_source.dart';
 import 'measurement.dart';
 import 'point_cloud_view.dart';
 
+/// The seven classes of weld40_s_1280. Keep in step with the model -- an
+/// unknown label falls back to grey rather than failing.
 const classColors = <String, Color>{
-  'porosity': Color(0xFFE74C3C),
-  'undercut': Color(0xFFF1C40F),
-  'excess_reinforcement': Color(0xFF3498DB),
-  'discontinuity': Color(0xFFE67E22),
-  'crater': Color(0xFF9B59B6),
-  'spatter': Color(0xFF1ABC9C),
-  'weld_seam': Color(0xFF2ECC71),
-  'workpiece': Color(0xFF7F8C9A),
+  'crack': Color(0xFFE74C3C),      // red
+  'overlap': Color(0xFF9B59B6),    // purple
+  'porosity': Color(0xFFE67E22),   // orange
+  'spatter': Color(0xFF1ABC9C),    // teal
+  'undercut': Color(0xFFF1C40F),   // amber
+  'weld_seam': Color(0xFF2ECC71),  // green
+  'workpiece': Color(0xFF7F8C9A),  // slate
 };
 
 Color colorFor(String label) => classColors[label] ?? const Color(0xFFBDC3C7);

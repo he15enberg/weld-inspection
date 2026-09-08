@@ -17,11 +17,36 @@ import 'depth_source.dart';
 import 'measure_screen.dart';
 import 'measurement.dart';
 
-/// TFLite on Android, CoreML on iOS. The plugin loads the .mlpackage.zip
-/// directly from assets.
-final modelPath = (!kIsWeb && Platform.isIOS)
-    ? 'assets/models/weld_seg.mlpackage'
-    : 'assets/models/weld_seg.tflite';
+/// Both trained models ship in assets; switch by changing [activeModel].
+///
+///   v1 - 8 classes, the earlier 12-image model
+///        porosity, weld_seam, discontinuity, workpiece, undercut,
+///        excess_reinforcement, crater, spatter
+///   v2 - 7 classes, trained on the 36-image data-40 set  <- current
+///        crack, overlap, porosity, spatter, undercut, weld_seam, workpiece
+///
+/// Class names differ between them, so measure_screen.dart's classColors must
+/// match whichever is active or detections fall back to grey.
+enum WeldModel {
+  v1('weld_v1_8cls'),
+  v2('weld_v2_7cls');
+
+  const WeldModel(this.base);
+  final String base;
+
+  /// TFLite on Android, CoreML on iOS.
+  ///
+  /// The iOS path MUST keep the `.zip` suffix. The plugin's resolver only
+  /// unpacks an archive when the path ends in `.mlpackage.zip`; give it a bare
+  /// `.mlpackage` and it passes the string straight through, then fails with
+  /// "Model does not exist at ... -- file:///".
+  String get path => (!kIsWeb && Platform.isIOS)
+      ? 'assets/models/$base.mlpackage.zip'
+      : 'assets/models/$base.tflite';
+}
+
+const activeModel = WeldModel.v2;
+final modelPath = activeModel.path;
 
 enum _Mode { live, capturing, result }
 
