@@ -1,47 +1,60 @@
-// Measure result: the RGB point cloud, full frame, and nothing else.
+// Measure result: a 2-D colourised depth map.
 //
-// Measurement and standards logic are deliberately not wired in here yet --
-// this screen exists to prove the depth capture and the 3-D view.
+// The 3-D RGB point cloud is commented out rather than deleted -- see the
+// blocks marked POINT CLOUD below, and lib/point_cloud.dart /
+// lib/point_cloud_view.dart, which are both still intact. To switch back:
+// uncomment those blocks, re-add the `cloud` parameter, and restore the
+// buildCloud() call in main.dart.
 
 import 'package:flutter/material.dart';
 
+import 'depth_map_view.dart';
 import 'depth_source.dart';
-import 'point_cloud.dart';
-import 'point_cloud_view.dart';
+
+// --- POINT CLOUD (disabled) -------------------------------------------------
+// import 'point_cloud.dart';
+// import 'point_cloud_view.dart';
+// ----------------------------------------------------------------------------
 
 class MeasureScreen extends StatelessWidget {
   const MeasureScreen({
     super.key,
     required this.frame,
-    required this.cloud,
     required this.onClose,
+    // --- POINT CLOUD (disabled) ---
+    // required this.cloud,
   });
 
   final DepthFrame frame;
-  final PointCloud cloud;
   final VoidCallback onClose;
+
+  // --- POINT CLOUD (disabled) ---
+  // final PointCloud cloud;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _Header(frame: frame, cloud: cloud, onClose: onClose),
+        _Header(frame: frame, onClose: onClose),
         Expanded(
           child: Container(
             color: const Color(0xFF0C1116),
-            child: Stack(
-              children: [
-                PointCloudView(cloud: cloud),
-                const Positioned(
-                  left: 14,
-                  bottom: 12,
-                  child: Text(
-                    'drag to orbit   ·   pinch to zoom   ·   double-tap to reset',
-                    style: TextStyle(fontSize: 11, color: Colors.white38),
-                  ),
-                ),
-              ],
-            ),
+            child: DepthMapView(frame: frame),
+
+            // --- POINT CLOUD (disabled) ---
+            // child: Stack(
+            //   children: [
+            //     PointCloudView(cloud: cloud),
+            //     const Positioned(
+            //       left: 14,
+            //       bottom: 12,
+            //       child: Text(
+            //         'drag to orbit  ·  pinch to zoom  ·  double-tap to reset',
+            //         style: TextStyle(fontSize: 11, color: Colors.white38),
+            //       ),
+            //     ),
+            //   ],
+            // ),
           ),
         ),
       ],
@@ -50,10 +63,9 @@ class MeasureScreen extends StatelessWidget {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.frame, required this.cloud, required this.onClose});
+  const _Header({required this.frame, required this.onClose});
 
   final DepthFrame frame;
-  final PointCloud cloud;
   final VoidCallback onClose;
 
   @override
@@ -72,16 +84,12 @@ class _Header extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  '${cloud.count} points',
-                  style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      fontFeatures: [FontFeature.tabularFigures()]),
+                const Text(
+                  'Depth map',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
                 ),
                 Text(
-                  '${frame.width}x${frame.height} depth  ·  '
-                  '${cloud.coloured ? 'RGB' : 'depth ramp'}',
+                  '${frame.width} x ${frame.height}  ·  ARKit sceneDepth',
                   style: const TextStyle(fontSize: 11, color: Colors.white54),
                 ),
               ],

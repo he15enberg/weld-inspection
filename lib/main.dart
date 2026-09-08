@@ -1,9 +1,10 @@
-// Live weld segmentation, and a Measure action that returns a full-frame RGB
-// point cloud.
+// Live weld segmentation, and a Measure action that shows a 2-D colourised
+// depth map.
 //
-// Measurement is deliberately not wired in yet: this build exists to prove the
-// depth capture and the 3-D view. measurement.dart still holds the tested maths
-// for when it comes back.
+// Neither measurement nor the 3-D point cloud is wired in: this build exists to
+// prove the LiDAR capture itself. Both are intact and commented out --
+// measurement.dart holds the tested maths, point_cloud.dart / point_cloud_view
+// .dart hold the 3-D path. Search "POINT CLOUD (disabled)" to re-enable.
 //
 // The one structural constraint: YOLOView owns the camera, and ARKit also wants
 // to own it. They cannot run at the same time. So pressing Measure UNMOUNTS
@@ -18,7 +19,8 @@ import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 
 import 'depth_source.dart';
 import 'measure_screen.dart';
-import 'point_cloud.dart';
+// --- POINT CLOUD (disabled) ---
+// import 'point_cloud.dart';
 
 /// Both trained models ship in assets; switch by changing [activeModel].
 ///
@@ -84,7 +86,9 @@ class _HomePageState extends State<HomePage> {
   List<YOLOResult> _live = const [];
 
   DepthFrame? _frame;
-  PointCloud _cloud = PointCloud.empty;
+
+  // --- POINT CLOUD (disabled) ---
+  // PointCloud _cloud = PointCloud.empty;
 
   void _onResult(List<YOLOResult> results) {
     if (!mounted || _mode != _Mode.live) return;
@@ -103,13 +107,14 @@ class _HomePageState extends State<HomePage> {
       setState(() => _status = 'Capturing depth…');
       final frame = await _depth.capture();
 
-      setState(() => _status = 'Building point cloud…');
-      final cloud = await buildCloud(frame);
+      // --- POINT CLOUD (disabled) ---
+      // setState(() => _status = 'Building point cloud…');
+      // final cloud = await buildCloud(frame);
 
       if (!mounted) return;
       setState(() {
         _frame = frame;
-        _cloud = cloud;
+        // _cloud = cloud;
         _mode = _Mode.result;
       });
     } catch (e) {
@@ -123,7 +128,8 @@ class _HomePageState extends State<HomePage> {
 
   void _backToLive() => setState(() {
         _mode = _Mode.live;
-        _cloud = PointCloud.empty;
+        _frame = null;
+        // _cloud = PointCloud.empty;
       });
 
   @override
@@ -150,8 +156,8 @@ class _HomePageState extends State<HomePage> {
       case _Mode.result:
         return MeasureScreen(
           frame: _frame!,
-          cloud: _cloud,
           onClose: _backToLive,
+          // cloud: _cloud,
         );
 
       case _Mode.live:
