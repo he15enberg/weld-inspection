@@ -59,6 +59,45 @@ from reference_postprocess import (  # noqa: E402
 DEFAULT_SOURCE = REPO / "welds" / "welds"
 
 
+def require_rfdetr():
+    """Import RFDETR, or explain precisely what is wrong.
+
+    rfdetr >= 1.10 requires Python 3.10+. On an older interpreter pip does not
+    error -- it silently resolves to an ancient release that has no `RFDETR`
+    class at all (only RFDETRBase / RFDETRLarge), and the failure surfaces as a
+    bare ImportError with no hint about the interpreter. macOS ships Python 3.9
+    as /usr/bin/python3, so a venv made with the system python lands exactly
+    here.
+    """
+    if sys.version_info < (3, 10):
+        v = ".".join(map(str, sys.version_info[:3]))
+        sys.exit(
+            f"Python {v} is too old -- rfdetr needs 3.10 or newer.\n"
+            f"  interpreter: {sys.executable}\n\n"
+            "macOS ships 3.9 as /usr/bin/python3, so a venv built from it lands\n"
+            "exactly here. Rebuild with a newer one:\n"
+            "  brew install python@3.12\n"
+            "  rm -rf .venv && /opt/homebrew/bin/python3.12 -m venv .venv\n"
+            "  source .venv/bin/activate && pip install 'rfdetr[coreml]'"
+        )
+    try:
+        from rfdetr import RFDETR
+    except ImportError as exc:
+        try:
+            import rfdetr
+            have = getattr(rfdetr, "__version__", "unknown")
+        except Exception:                                     # noqa: BLE001
+            sys.exit(f"rfdetr is not installed: {exc}\n"
+                     "  pip install 'rfdetr[coreml]'")
+        sys.exit(
+            f"rfdetr {have} is installed but has no RFDETR class "
+            "(added in 1.7; these scripts target 1.10+).\n"
+            f"  interpreter: {sys.executable}\n"
+            "  pip install --upgrade 'rfdetr[coreml]'"
+        )
+    return RFDETR
+
+
 def bind(arrays: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """Match outputs by rank and last dim, as Swift must: coremltools does not
     preserve the ONNX names."""
@@ -89,6 +128,7 @@ def main() -> None:
 
     if platform.system() != "Darwin":
         sys.exit("CoreML can only execute on macOS. Run this on the Mac.")
+    require_rfdetr()
     for path, flag in ((args.mlpackage, "--mlpackage"), (args.ckpt, "--ckpt")):
         if not Path(path).exists():
             sys.exit(f"not found: {path}\n"
@@ -104,8 +144,7 @@ def main() -> None:
     out_names = list(ml.output_description)
     print(f"mlpackage input '{input_name}'   outputs {out_names}")
 
-    from rfdetr import RFDETR
-
+    RFDETR = require_rfdetr()
     model = RFDETR.from_checkpoint(args.ckpt, trust_checkpoint=True)
     model.model.device = torch.device("cpu")
     model.model.model = model.model.model.to("cpu")
