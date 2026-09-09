@@ -1,4 +1,4 @@
-// RF-DETR Seg inference: CVPixelBuffer in, detections and a mask overlay out.
+// RF-DETR Seg inference: CVPixelBuffer in, detections and mask logits out.
 //
 // This is a port of train/rfdetr/reference_postprocess.py, which was verified
 // bit-for-bit against the model's own predict() on real weld images before any
@@ -10,6 +10,10 @@
 // ct.convert() with no ImageType (export/_coreml/converter.py:175), so there is
 // no image input for VNCoreMLRequest to bind to, and no built-in resize or
 // colour handling either. Everything below the model is ours.
+//
+// All tensor reads go through MLTensor, which honours dtype and strides. The
+// first version bound raw pointers as Float32 and assumed row-major, which is
+// how 800 logits silently came back as ~0 and every detection scored 50%.
 
 import Accelerate
 import CoreML
@@ -52,8 +56,7 @@ final class RFDetrRunner {
     /// This is the **dataset-combined (8-class)** order. The earlier data-40
     /// checkpoint had 7 and no `discontinuity`; adding it at index 1 shifts
     /// every class after it, which is why this list moves with the checkpoint
-    /// rather than being a fixed alphabet. `classNames.count` is checked against
-    /// the head width at load time so a mismatched pair fails loudly.
+    /// rather than being a fixed alphabet.
     static let classNames = [
         "crack", "discontinuity", "overlap", "porosity",
         "spatter", "undercut", "weld_seam", "workpiece",
@@ -63,8 +66,11 @@ final class RFDetrRunner {
     static let numSelect = 300
 
     /// ImageNet statistics, as the exported model expects.
-    private static let mean: (Float, Float, Float) = (0.485, 0.456, 0.406)
-    private static let std: (Float, Float, Float) = (0.229, 0.224, 0.225)
+    private static let mean: [Float] = [0.485, 0.456, 0.406]
+    private static let std: [Float] = [0.229, 0.224, 0.225]
+
+    /// Set false once this is trusted; the logging costs a few ms per capture.
+    static var verbose = true
 
     private let model: MLModel
     private let inputName: String
@@ -74,7 +80,7 @@ final class RFDetrRunner {
     /// carries a background slot. Detected rather than hardcoded — the data-40
     /// checkpoint has one at the LAST index, and dropping the wrong column
     /// shifts every label.
-    private let hasBackground: Bool
+    private var hasBackground = false
 
     // MARK: - loading
 
@@ -83,9 +89,8 @@ final class RFDetrRunner {
             throw RFDetrError.modelMissing
         }
         let config = MLModelConfiguration()
-        // .all lets Core ML place work on the ANE when it can. The deformable
-        // attention may not map, in which case it silently falls back to GPU or
-        // CPU -- slower, but correct.
+        // .all lets Core ML place work on the ANE when it can. That is also why
+        // output dtype cannot be assumed: the ANE returns what suits it.
         config.computeUnits = .all
         model = try MLModel(contentsOf: url, configuration: config)
 
@@ -98,32 +103,56 @@ final class RFDetrRunner {
         inputName = input.key
         side = shape[2].intValue
 
-        // Head width vs class list, checked once so a mismatched checkpoint
-        // fails loudly here instead of mislabelling every detection.
-        let logitWidth = desc.outputDescriptionsByName.values
-            .compactMap { $0.multiArrayConstraint?.shape }
-            .filter { $0.count == 3 && $0[2].intValue != 4 }
-            .map { $0[2].intValue }
-            .first
-        let n = Self.classNames.count
-        switch logitWidth {
-        case .some(n):      hasBackground = false
-        case .some(n + 1):  hasBackground = true
-        case .some(let w):
-            throw RFDetrError.badOutputs("logits width \(w) matches neither \(n) classes nor \(n)+background")
-        case .none:
-            throw RFDetrError.badOutputs("no logits output found")
+        if Self.verbose {
+            print("[RFDetr] ---- model loaded ----")
+            print("[RFDetr] input '\(inputName)' shape \(shape.map(\.intValue)) side \(side)")
+            for (name, d) in desc.outputDescriptionsByName {
+                let s = d.multiArrayConstraint?.shape.map(\.intValue) ?? []
+                let t = d.multiArrayConstraint?.dataType
+                print("[RFDetr] declared output '\(name)' shape \(s)"
+                      + (t.map { " \(MLTensor.typeName($0))" } ?? ""))
+            }
+            print("[RFDetr] classNames (\(Self.classNames.count)): \(Self.classNames)")
         }
     }
 
     // MARK: - inference
 
     func run(pixelBuffer: CVPixelBuffer, threshold: Float = 0.25) throws -> [WeldDetection] {
+        let t0 = CFAbsoluteTimeGetCurrent()
         let input = try preprocess(pixelBuffer)
+        let t1 = CFAbsoluteTimeGetCurrent()
+
         let provider = try MLDictionaryFeatureProvider(dictionary: [inputName: input])
         let out = try model.prediction(from: provider)
+        let t2 = CFAbsoluteTimeGetCurrent()
+
         let (dets, logits, masks) = try bind(out)
-        return postprocess(dets: dets, logits: logits, masks: masks, threshold: threshold)
+
+        if Self.verbose {
+            print("[RFDetr] ---- capture ----")
+            print(MLTensor.describe("input", input))
+            print(MLTensor.describe("dets", dets))
+            print(MLTensor.describe("logits", logits))
+            if let masks { print(MLTensor.describe("masks", masks)) }
+        }
+
+        let result = postprocess(dets: dets, logits: logits, masks: masks, threshold: threshold)
+        let t3 = CFAbsoluteTimeGetCurrent()
+
+        if Self.verbose {
+            print(String(format: "[RFDetr] timing  pre %.0f ms  predict %.0f ms  post %.0f ms",
+                         (t1 - t0) * 1000, (t2 - t1) * 1000, (t3 - t2) * 1000))
+            print("[RFDetr] detections: \(result.count) at threshold \(threshold)")
+            for d in result.prefix(10) {
+                print(String(format: "[RFDetr]   %@ %.3f  box [%.4f %.4f %.4f %.4f]",
+                             d.label, d.confidence, d.x0, d.y0, d.x1, d.y1))
+            }
+            if result.count == Self.numSelect {
+                print("[RFDetr] !! hit the numSelect cap — scores are probably degenerate")
+            }
+        }
+        return result
     }
 
     // MARK: - preprocessing
@@ -135,11 +164,9 @@ final class RFDetrRunner {
     /// boxes straight by the original size.
     ///
     /// The resample is hand-written bilinear with half-pixel centres and NO
-    /// antialiasing, because that is what torchvision does with antialias=False.
+    /// antialiasing, because that is what torchvision does with antialias=false.
     /// vImageScale and Core Image both antialias when downscaling, which shifts
-    /// pixel values and therefore confidences -- silently, with no error. Doing
-    /// the sampling here costs a few million multiply-adds on a one-shot
-    /// capture and buys exact parity with the Python reference.
+    /// pixel values and therefore confidences -- silently, with no error.
     private func preprocess(_ buffer: CVPixelBuffer) throws -> MLMultiArray {
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
@@ -152,11 +179,13 @@ final class RFDetrRunner {
         }
         let src = base.assumingMemoryBound(to: UInt8.self)
 
-        // ARKit's capturedImage is 420f (bi-planar YUV), so the caller converts
-        // to BGRA first; see ARSessionManager.bgraCopy.
-        let bgra = CVPixelBufferGetPixelFormatType(buffer)
-        guard bgra == kCVPixelFormatType_32BGRA else {
-            throw RFDetrError.badOutputs("expected 32BGRA, got \(bgra)")
+        let format = CVPixelBufferGetPixelFormatType(buffer)
+        guard format == kCVPixelFormatType_32BGRA else {
+            throw RFDetrError.badOutputs("expected 32BGRA, got \(format)")
+        }
+        if Self.verbose {
+            print("[RFDetr] source \(srcW)x\(srcH) bytesPerRow \(stride) "
+                  + "(packed would be \(srcW * 4)) -> \(side)x\(side) stretch")
         }
 
         let array = try MLMultiArray(shape: [1, 3, NSNumber(value: side), NSNumber(value: side)],
@@ -165,8 +194,6 @@ final class RFDetrRunner {
         let plane = side * side
         let scaleX = Float(srcW) / Float(side)
         let scaleY = Float(srcH) / Float(side)
-        let means = [Self.mean.0, Self.mean.1, Self.mean.2]
-        let stds = [Self.std.0, Self.std.1, Self.std.2]
 
         for dy in 0..<side {
             // half-pixel centres == align_corners=false
@@ -181,9 +208,9 @@ final class RFDetrRunner {
                 let x1 = min(x0 + 1, srcW - 1)
                 let wx = fx - Float(x0)
 
-                let r00 = y0 * stride, r10 = y1 * stride
-                let o00 = r00 + x0 * 4, o01 = r00 + x1 * 4
-                let o10 = r10 + x0 * 4, o11 = r10 + x1 * 4
+                let r0 = y0 * stride, r1 = y1 * stride
+                let o00 = r0 + x0 * 4, o01 = r0 + x1 * 4
+                let o10 = r1 + x0 * 4, o11 = r1 + x1 * 4
                 let outIdx = dy * side + dx
 
                 // BGRA in memory; channel c of RGB reads byte (2 - c)
@@ -192,7 +219,7 @@ final class RFDetrRunner {
                     let top = Float(src[o00 + b]) * (1 - wx) + Float(src[o01 + b]) * wx
                     let bot = Float(src[o10 + b]) * (1 - wx) + Float(src[o11 + b]) * wx
                     let v = (top * (1 - wy) + bot * wy) / 255.0
-                    dst[c * plane + outIdx] = (v - means[c]) / stds[c]
+                    dst[c * plane + outIdx] = (v - Self.mean[c]) / Self.std[c]
                 }
             }
         }
@@ -206,16 +233,40 @@ final class RFDetrRunner {
     /// boxes are the rank-3 tensor with last dim 4, logits the other rank-3,
     /// masks the rank-4.
     private func bind(_ out: MLFeatureProvider) throws -> (MLMultiArray, MLMultiArray, MLMultiArray?) {
-        var arrays: [MLMultiArray] = []
+        var named: [(String, MLMultiArray)] = []
         for name in out.featureNames {
-            if let a = out.featureValue(for: name)?.multiArrayValue { arrays.append(a) }
+            if let a = out.featureValue(for: name)?.multiArrayValue { named.append((name, a)) }
         }
+        if Self.verbose {
+            let summary = named.map { "\($0.0)\($0.1.shape.map(\.intValue))" }.joined(separator: " ")
+            print("[RFDetr] raw outputs: \(summary)")
+        }
+
+        let arrays = named.map(\.1)
         let rank3 = arrays.filter { $0.shape.count == 3 }
         guard let dets = rank3.first(where: { $0.shape[2].intValue == 4 }),
               let logits = rank3.first(where: { $0.shape[2].intValue != 4 })
         else {
             throw RFDetrError.badOutputs(arrays.map { $0.shape.description }.joined(separator: " "))
         }
+
+        // Head width vs class list, checked on the real tensor rather than the
+        // declared description, which can carry symbolic dimensions.
+        let width = logits.shape[2].intValue
+        let n = Self.classNames.count
+        switch width {
+        case n:      hasBackground = false
+        case n + 1:  hasBackground = true
+        default:
+            throw RFDetrError.badOutputs(
+                "logits width \(width) matches neither \(n) classes nor \(n)+background")
+        }
+        if Self.verbose {
+            print("[RFDetr] logits width \(width) vs \(n) classes -> "
+                  + (hasBackground ? "background slot present (last column dropped)"
+                                   : "no background slot"))
+        }
+
         return (dets, logits, arrays.first { $0.shape.count == 4 })
     }
 
@@ -228,18 +279,20 @@ final class RFDetrRunner {
         let q = logits.shape[1].intValue
         let cAll = logits.shape[2].intValue
         // Background sits at the LAST slot when present, so the kept columns
-        // are simply the first `c` of them and class index == column index.
+        // are the first `c` and class index == column index.
         let c = hasBackground ? cAll - 1 : cAll
 
-        let lp = logits.dataPointer.bindMemory(to: Float.self, capacity: logits.count)
-        let bp = dets.dataPointer.bindMemory(to: Float.self, capacity: dets.count)
+        // Materialised through MLTensor: dtype-aware and stride-aware. Both are
+        // small (100x9 and 100x4), so the copy is trivial.
+        let lg = MLTensor.floats(logits)
+        let bx = MLTensor.floats(dets)
 
         // 1. per-class sigmoid -- NOT softmax; the classes are independent
         var scored: [(score: Float, query: Int, cls: Int)] = []
         scored.reserveCapacity(q * c)
         for i in 0..<q {
             for j in 0..<c {
-                let z = min(max(lp[i * cAll + j], -88), 88)
+                let z = min(max(lg[i * cAll + j], -88), 88)
                 scored.append((1 / (1 + exp(-z)), i, j))
             }
         }
@@ -260,8 +313,12 @@ final class RFDetrRunner {
             .prefix(Self.numSelect)
             .filter { $0.element.score > threshold }
 
-        // mask grid, if this is a segmentation head
-        let mp = masks?.dataPointer.bindMemory(to: Float.self, capacity: masks!.count)
+        if Self.verbose {
+            let top = scored.map(\.score).sorted(by: >).prefix(5)
+            print("[RFDetr] top 5 scores: " + top.map { String(format: "%.4f", $0) }
+                .joined(separator: " "))
+        }
+
         let mh = masks?.shape[2].intValue ?? 0
         let mw = masks?.shape[3].intValue ?? 0
 
@@ -270,13 +327,12 @@ final class RFDetrRunner {
 
             // 3. gather by query index -- repeats are expected and fine
             let o = query * 4
-            let cx = bp[o], cy = bp[o + 1], bw = bp[o + 2], bh = bp[o + 3]
+            let cx = bx[o], cy = bx[o + 1], bw = bx[o + 2], bh = bx[o + 3]
 
             // 4. cxcywh -> xyxy, still normalised
             var mask: [Float] = []
-            if let mp, mh > 0 {
-                let start = query * mh * mw
-                mask = Array(UnsafeBufferPointer(start: mp + start, count: mh * mw))
+            if let masks, mh > 0 {
+                mask = MLTensor.gather(masks, query: query)
             }
 
             return WeldDetection(
