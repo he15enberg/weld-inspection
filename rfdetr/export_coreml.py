@@ -2,10 +2,13 @@
 
 macOS ONLY. coremltools cannot produce an .mlpackage on Windows or Linux.
 
+Everything defaults to this directory: drop `checkpoint_best_ema.pth` next to
+this script and the bundle is written beside it.
+
     pip install "rfdetr[coreml]"
-    python export_coreml.py                        # best epoch, fp32, 1272
+    python export_coreml.py                        # fp32, 1272
     python export_coreml.py --precision float16    # smaller, ANE-oriented
-    python export_coreml.py --ckpt path/to/other.pth
+    python export_coreml.py --ckpt other.pth
 
 Then run verify_coreml.py before writing or trusting any Swift.
 
@@ -29,23 +32,20 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-RUNS = HERE / "runs"
-DEFAULT_RUN = RUNS / "rfdetr_seg_small_1272"
 
 # RFDETRSegSmall asserts input divisibility by patch_size * num_windows = 12 * 2.
 BLOCK = 24
 
 
-def best_epoch(run_dir: Path) -> tuple[int, float] | None:
-    """Peak val/ema_segm_mAP_50 from metrics.csv, for reporting.
+def best_epoch(metrics: Path) -> tuple[int, float] | None:
+    """Peak val/ema_segm_mAP_50 from a metrics.csv, for reporting. Optional.
 
     Reads the `epoch` column rather than the row index: metrics.csv writes TWO
     rows per epoch, so counting rows silently doubles every epoch number.
     """
-    path = run_dir / "metrics.csv"
-    if not path.exists():
+    if not metrics.exists():
         return None
-    rows = list(csv.DictReader(path.open(encoding="utf-8")))
+    rows = list(csv.DictReader(metrics.open(encoding="utf-8")))
     scored = [
         (int(r["epoch"]), float(r["val/ema_segm_mAP_50"]))
         for r in rows
@@ -56,12 +56,9 @@ def best_epoch(run_dir: Path) -> tuple[int, float] | None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", default=str(DEFAULT_RUN),
-                    help="training run directory holding the checkpoints")
-    ap.add_argument("--ckpt", default=None,
-                    help="checkpoint file; defaults to <run>/checkpoint_best_ema.pth")
-    ap.add_argument("--out", default=None,
-                    help="output directory; defaults to <run>/coreml")
+    ap.add_argument("--ckpt", default=str(HERE / "checkpoint_best_ema.pth"))
+    ap.add_argument("--out", default=str(HERE),
+                    help="directory to write the .mlpackage into")
     ap.add_argument("--name", default="weld_rfdetr",
                     help="bundle name; must match RFDetrRunner's modelName in Swift")
     ap.add_argument("--resolution", type=int, default=1272,
@@ -75,18 +72,20 @@ def main() -> None:
         sys.exit(f"resolution {args.resolution} is not divisible by {BLOCK} "
                  f"(patch 12 x 2 windows); try 1272 or 1296")
 
-    run = Path(args.run)
-    ckpt = Path(args.ckpt) if args.ckpt else run / "checkpoint_best_ema.pth"
-    out = Path(args.out) if args.out else run / "coreml"
+    ckpt = Path(args.ckpt)
+    out = Path(args.out)
     if not ckpt.exists():
-        sys.exit(f"checkpoint not found: {ckpt}")
+        sys.exit(f"checkpoint not found: {ckpt}\n"
+                 f"Put checkpoint_best_ema.pth in {HERE}, or pass --ckpt.")
     out.mkdir(parents=True, exist_ok=True)
 
-    peak = best_epoch(run)
+    # metrics.csv is only there if the whole run directory was copied across;
+    # its absence is normal and costs nothing but this note.
+    peak = best_epoch(ckpt.parent / "metrics.csv")
     if peak:
         print(f"run peak: val/ema_segm_mAP_50 {peak[1]:.4f} at epoch {peak[0]}")
-        print("  (checkpoint_best_ema.pth should correspond to this epoch; if the\n"
-              "   score decayed later in training, the LAST epoch is not the best one)")
+        print("  (if the score decayed later in training, the LAST epoch is not\n"
+              "   the best one -- make sure this checkpoint is the peak)")
     print(f"checkpoint  {ckpt}")
     print(f"resolution  {args.resolution}   precision {args.precision}\n")
 
@@ -110,7 +109,7 @@ def main() -> None:
 
     print(f"\nexported -> {path}")
     print("\nnext:")
-    print(f"  python verify_coreml.py --mlpackage {path} --ckpt {ckpt}")
+    print("  python verify_coreml.py")
     print("  and only once that passes, add the bundle to the Runner TARGET in Xcode")
 
 

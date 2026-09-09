@@ -7,10 +7,12 @@ Two RF-DETR specifics this handles:
 
 1. **Class names are not in the checkpoint.** `class_names` comes back None, so
    the id -> name mapping is rebuilt the way training built it: the annotated
-   categories, filtered and sorted, enumerated from 0. CLASSES below is that
-   list for the data-40 run; it is asserted against the model's num_classes so a
-   checkpoint with a different head fails loudly instead of mislabelling
-   everything.
+   categories, filtered and sorted, enumerated from 0. That derivation is done
+   here from the run's own COCO annotations rather than hardcoded, because the
+   two datasets disagree -- dataset-combined inserts `discontinuity` at index 1
+   and shifts every class after it. Whatever list is resolved is checked against
+   the checkpoint's head width, so a mismatch fails loudly instead of silently
+   mislabelling everything.
 
 2. **RGB, not BGR.** predict() wants RGB; cv2 gives BGR. Getting this wrong
    costs accuracy silently rather than erroring.
@@ -24,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
 import sys
 from pathlib import Path
 
@@ -35,13 +38,50 @@ sys.path.insert(0, str(HERE.parent))          # train/overlay.py
 import overlay                                 # noqa: E402
 
 REPO = HERE.parents[1]
-CKPT = HERE / "runs" / "rfdetr_seg_small_data40" / "checkpoint_best_ema.pth"
+CKPT = HERE / "runs" / "rfdetr_seg_small_1272" / "checkpoint_best_ema.pth"
 
-# data-40 label space: 0-based, the order training derived from the COCO
-# categories (ids 1..7, alphabetical). NOT the dataset-combined list -- that one
-# inserts `discontinuity` at index 1 and shifts everything after it.
-CLASSES = ["crack", "overlap", "porosity", "spatter", "undercut",
-           "weld_seam", "workpiece"]
+COCO_DIR = HERE / "dataset_coco"
+
+# Fallbacks, used only when the COCO annotations are not on disk. Both are the
+# order training derives: annotated categories, filtered, sorted, from 0.
+KNOWN_CLASSES = {
+    7: ["crack", "overlap", "porosity", "spatter", "undercut",
+        "weld_seam", "workpiece"],                      # data-40
+    8: ["crack", "discontinuity", "overlap", "porosity", "spatter",
+        "undercut", "weld_seam", "workpiece"],          # dataset-combined
+}
+
+
+def resolve_classes(num_classes: int) -> tuple[list[str], str]:
+    """The label space the checkpoint was trained in.
+
+    Preferred source is the run's own `_annotations.coco.json`, read through
+    rfdetr's own `filter_parent_categories` -- the same function the dataset
+    loader used to build cat2label, so the order cannot drift from training.
+    Falls back to KNOWN_CLASSES keyed on the head width.
+    """
+    ann = COCO_DIR / "train" / "_annotations.coco.json"
+    if ann.exists():
+        try:
+            from rfdetr.datasets.coco import (annotated_category_ids,
+                                              filter_parent_categories)
+            data = json.loads(ann.read_text(encoding="utf-8"))
+            kept = filter_parent_categories(data["categories"],
+                                            annotated_category_ids(data))
+            names = [c["name"] for c in kept]
+            if len(names) == num_classes:
+                return names, f"derived from {ann.parent.name}/_annotations.coco.json"
+        except Exception as exc:                       # noqa: BLE001
+            print(f"  (could not read {ann}: {exc})")
+
+    if num_classes in KNOWN_CLASSES:
+        return KNOWN_CLASSES[num_classes], f"built-in list for a {num_classes}-class head"
+
+    raise SystemExit(
+        f"checkpoint head has {num_classes} classes and no matching label space "
+        f"was found. Either run train.py --prepare-only to regenerate "
+        f"{COCO_DIR}, or add the list to KNOWN_CLASSES."
+    )
 
 
 def main() -> None:
@@ -59,13 +99,8 @@ def main() -> None:
 
     model = RFDETR.from_checkpoint(args.ckpt, trust_checkpoint=True)
     cfg = model.model_config
-    nc = getattr(cfg, "num_classes", len(CLASSES))
-    if nc != len(CLASSES):
-        raise SystemExit(
-            f"checkpoint head has {nc} classes but CLASSES lists {len(CLASSES)}.\n"
-            f"This script is pinned to the data-40 label space; a combined-dataset\n"
-            f"checkpoint needs the 8-class list instead."
-        )
+    nc = int(getattr(cfg, "num_classes", 0))
+    classes, source = resolve_classes(nc)
     res = args.res or getattr(cfg, "resolution", 1272)
     shape = (res, res)
 
@@ -77,7 +112,8 @@ def main() -> None:
         raise SystemExit(f"no images in {src}")
 
     print(f"{type(model).__name__}  |  {len(images)} images  |  conf {args.conf}"
-          f"  |  res {res}  |  {nc} classes\n")
+          f"  |  res {res}")
+    print(f"{nc} classes ({source}):\n  {classes}\n")
 
     totals: collections.Counter = collections.Counter()
     empty: list[str] = []
@@ -95,7 +131,7 @@ def main() -> None:
         dets = []
         masks = getattr(det, "mask", None)
         for i in range(len(det)):
-            label = CLASSES[int(det.class_id[i])]
+            label = classes[int(det.class_id[i])]
             if args.only and label != args.only:
                 continue
             conf = float(det.confidence[i])
@@ -114,7 +150,7 @@ def main() -> None:
         # count instances, not contours: one mask can break into several pieces
         tally = collections.Counter()
         for i in range(len(det)):
-            label = CLASSES[int(det.class_id[i])]
+            label = classes[int(det.class_id[i])]
             if not args.only or label == args.only:
                 tally[label] += 1
         totals.update(tally)

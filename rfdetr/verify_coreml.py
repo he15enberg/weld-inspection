@@ -4,7 +4,10 @@ macOS ONLY (CoreML cannot execute elsewhere). Run this BEFORE writing or
 trusting any Swift. A failure here is a model problem, and finding it after the
 Swift is in play costs far more to diagnose.
 
-    python verify_coreml.py --mlpackage runs/.../coreml/weld_rfdetr.mlpackage
+Both the checkpoint and the .mlpackage default to this directory.
+
+    python verify_coreml.py
+    python verify_coreml.py --mlpackage other.mlpackage --ckpt other.pth
 
 Three deliberate choices, each of which the obvious version gets wrong:
 
@@ -73,8 +76,8 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mlpackage", required=True)
-    ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--mlpackage", default=str(HERE / "weld_rfdetr.mlpackage"))
+    ap.add_argument("--ckpt", default=str(HERE / "checkpoint_best_ema.pth"))
     ap.add_argument("--source", default=str(DEFAULT_SOURCE))
     ap.add_argument("-n", type=int, default=5)
     ap.add_argument("--conf", type=float, default=0.25)
@@ -86,6 +89,10 @@ def main() -> None:
 
     if platform.system() != "Darwin":
         sys.exit("CoreML can only execute on macOS. Run this on the Mac.")
+    for path, flag in ((args.mlpackage, "--mlpackage"), (args.ckpt, "--ckpt")):
+        if not Path(path).exists():
+            sys.exit(f"not found: {path}\n"
+                     f"Both default to {HERE}; pass {flag} to point elsewhere.")
 
     import coremltools as ct
 
