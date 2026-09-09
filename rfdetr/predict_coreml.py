@@ -8,6 +8,14 @@ phone does not, the fault is in the Swift, not the model.
     python predict_coreml.py --source one.jpg --conf 0.4
     python predict_coreml.py --only porosity
 
+To run the COMPILED model from inside the built app instead of the .mlpackage:
+
+    find ~/Downloads/rfdetr_test/build -name "*.mlmodelc"
+    python predict_coreml.py --mlmodelc <that path> --source ~/Desktop/welds
+
+Same weights either way -- coremlc only repackages the graph -- so this only
+tells you something new if you suspect the Xcode compile step itself.
+
 Needs `reference_postprocess.py` beside it (it supplies preprocess/postprocess).
 Draws with PIL rather than OpenCV so there is nothing extra to install.
 
@@ -57,6 +65,56 @@ KNOWN_CLASSES = {
     8: ["crack", "discontinuity", "overlap", "porosity", "spatter",
         "undercut", "weld_seam", "workpiece"],              # dataset-combined
 }
+
+
+def load_compiled(mlmodelc: Path, mlpackage: Path | None):
+    """Load the .mlmodelc that is actually inside the built app.
+
+    `CompiledMLModel` runs a compiled model but exposes no `get_spec()`, so the
+    input name, output names and resolution have to come from somewhere else.
+    Tried in order:
+
+      1. `metadata.json` inside the .mlmodelc — present in most compiled models,
+         but its schema is not a documented contract, so failures here are
+         expected and non-fatal.
+      2. The .mlpackage the bundle was compiled from, if it is around. Same
+         graph, so the names match.
+
+    If both miss, pass --input-name / --outputs / --res explicitly.
+    """
+    import coremltools as ct
+
+    model = ct.models.CompiledMLModel(str(mlmodelc))
+    inp = outs = res = None
+
+    meta = mlmodelc / "metadata.json"
+    if meta.exists():
+        try:
+            import json
+            doc = json.loads(meta.read_text())
+            doc = doc[0] if isinstance(doc, list) else doc
+            ins = doc.get("inputSchema") or []
+            outs = [o["name"] for o in (doc.get("outputSchema") or [])] or None
+            if ins:
+                inp = ins[0]["name"]
+                shape = ins[0].get("shape")
+                if isinstance(shape, str):
+                    shape = [int(x) for x in shape.strip("[]").split(",")]
+                if shape and len(shape) == 4:
+                    res = int(shape[2])
+        except Exception as exc:                              # noqa: BLE001
+            print(f"  (metadata.json unreadable: {exc})")
+
+    if (inp is None or outs is None or res is None) and mlpackage and mlpackage.exists():
+        ref = ct.models.MLModel(str(mlpackage))
+        inp = inp or list(ref.input_description)[0]
+        outs = outs or list(ref.output_description)
+        if res is None:
+            shape = ref.get_spec().description.input[0].type.multiArrayType.shape
+            res = int(shape[2])
+        print(f"  (schema read from {mlpackage.name})")
+
+    return model, inp, outs, res
 
 
 def bind(arrays):
@@ -112,30 +170,48 @@ def draw(img: Image.Image, dets, labels, only=None) -> Image.Image:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mlpackage", default=str(HERE / "weld_rfdetr.mlpackage"))
+    ap.add_argument("--mlmodelc",
+                    help="run the COMPILED model from inside the built app "
+                         "instead (find it with: find <app> -name '*.mlmodelc')")
     ap.add_argument("--source", required=True, help="image file or folder")
     ap.add_argument("--out", default=str(HERE / "outputs"))
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--size", type=int, default=1600, help="longest side of the output")
     ap.add_argument("--only", help="draw just this class")
     ap.add_argument("--classes", help="comma-separated override for the class list")
+    ap.add_argument("--input-name", help="override, when the schema cannot be read")
+    ap.add_argument("--outputs", help="comma-separated output names, same case")
+    ap.add_argument("--res", type=int, help="model input side, same case")
     args = ap.parse_args()
 
     if platform.system() != "Darwin":
         sys.exit("CoreML can only execute on macOS. Run this on the Mac.")
-    if not Path(args.mlpackage).exists():
-        sys.exit(f"not found: {args.mlpackage}   (pass --mlpackage)")
 
     import coremltools as ct
 
-    ml = ct.models.MLModel(args.mlpackage)
-    input_name = list(ml.input_description)[0]
-    out_names = list(ml.output_description)
+    if args.mlmodelc:
+        path = Path(args.mlmodelc)
+        if not path.exists():
+            sys.exit(f"not found: {path}")
+        pkg = Path(args.mlpackage)
+        ml, input_name, out_names, res = load_compiled(path, pkg if pkg.exists() else None)
+        input_name = args.input_name or input_name
+        out_names = args.outputs.split(",") if args.outputs else out_names
+        res = args.res or res
+        if not (input_name and out_names and res):
+            sys.exit("could not determine the model schema; pass --input-name, "
+                     "--outputs and --res (or keep the .mlpackage nearby)")
+        print(f"model {path.name}  (compiled, from the app bundle)")
+    else:
+        if not Path(args.mlpackage).exists():
+            sys.exit(f"not found: {args.mlpackage}   (pass --mlpackage)")
+        ml = ct.models.MLModel(args.mlpackage)
+        input_name = list(ml.input_description)[0]
+        out_names = list(ml.output_description)
+        res = int(ml.get_spec().description.input[0].type.multiArrayType.shape[2])
+        print(f"model {Path(args.mlpackage).name}")
 
-    spec = ml.get_spec()
-    shape = [int(d) for d in spec.description.input[0].type.multiArrayType.shape]
-    res = shape[2]
-    print(f"model {Path(args.mlpackage).name}")
-    print(f"  input '{input_name}' {shape}   outputs {out_names}")
+    print(f"  input '{input_name}' side {res}   outputs {out_names}")
 
     src = Path(args.source)
     images = ([src] if src.is_file()
