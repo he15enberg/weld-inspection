@@ -1,0 +1,9 @@
+# torch and rfdetr are NOT pinned here on purpose: install them the way the
+# training box already has them (CUDA build for the 5090), then add these.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+#   pip install rfdetr
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pillow>=10.0
+numpy>=1.26
