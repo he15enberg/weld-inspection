@@ -28,20 +28,22 @@ final class ARPreviewFactory: NSObject, FlutterPlatformViewFactory {
 @available(iOS 16.0, *)
 final class ARPreviewView: NSObject, FlutterPlatformView {
 
-    private let view: ARSCNView
+    // Not named `view`: FlutterPlatformView requires a `view()` method, and a
+    // stored property of the same name is a redeclaration.
+    private let arView: ARSCNView
 
     init(frame: CGRect) {
-        view = ARSCNView(frame: frame)
+        arView = ARSCNView(frame: frame)
         // The shared session, not a new one. ARSCNView would otherwise create
         // its own and the two would fight over the camera -- exactly the
         // problem this app exists to avoid.
-        view.session = ARSessionManager.shared.session
-        view.automaticallyUpdatesLighting = true
+        arView.session = ARSessionManager.shared.session
+        arView.automaticallyUpdatesLighting = true
         super.init()
         ARSessionManager.shared.start()
     }
 
-    func view() -> UIView { view }
+    func view() -> UIView { arView }
 
     // Flutter disposes the platform view when the widget unmounts. The session
     // is deliberately left running: the result screen sits over the preview
