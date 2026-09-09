@@ -45,13 +45,18 @@ final class RFDetrRunner {
 
     // MARK: - configuration
 
-    /// Class list in the model's own index order. This is the data-40 (7-class)
-    /// order; the combined-dataset model inserts `discontinuity` at index 1 and
-    /// shifts everything after it, so this list moves with the checkpoint.
-    /// `classNames.count` is checked against the head width at load time.
+    /// Class list in the model's own index order: the annotated COCO categories,
+    /// filtered and sorted, enumerated from 0 — exactly what rfdetr's dataset
+    /// loader derives for cat2label, so these indices are the model's.
+    ///
+    /// This is the **dataset-combined (8-class)** order. The earlier data-40
+    /// checkpoint had 7 and no `discontinuity`; adding it at index 1 shifts
+    /// every class after it, which is why this list moves with the checkpoint
+    /// rather than being a fixed alphabet. `classNames.count` is checked against
+    /// the head width at load time so a mismatched pair fails loudly.
     static let classNames = [
-        "crack", "overlap", "porosity", "spatter",
-        "undercut", "weld_seam", "workpiece",
+        "crack", "discontinuity", "overlap", "porosity",
+        "spatter", "undercut", "weld_seam", "workpiece",
     ]
 
     /// Matches PostProcess's default; the cap applies before thresholding.
