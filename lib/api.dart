@@ -11,6 +11,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import 'capture.dart';
+import 'settings.dart';
 
 class Detection {
   const Detection({
@@ -145,7 +146,11 @@ class Api {
     }
   }
 
-  Future<Report> measure(Capture c, {double confidence = 0.25}) async {
+  /// [settings] supplies the threshold and the pre-inference geometry. The
+  /// server clamps the threshold again and snaps the crop to a size whose edges
+  /// land on whole depth pixels, so what comes back in `Report.geometry` is
+  /// what actually happened -- not necessarily what was asked for.
+  Future<Report> measure(Capture c, {Settings? settings}) async {
     final req = http.MultipartRequest('POST', _url('/measure'))
       ..headers.addAll(_headers)
       ..fields['meta'] = jsonEncode({
@@ -157,7 +162,9 @@ class Api {
         'fy': c.fy,
         'cx': c.cx,
         'cy': c.cy,
-        'conf': confidence,
+        'conf': settings?.conf ?? Settings.defaultConf,
+        'rotate': settings?.rotate ?? Settings.defaultRotate,
+        'crop': settings?.crop ?? Settings.defaultCrop,
       })
       ..files.add(http.MultipartFile.fromBytes('color', c.jpeg,
           filename: 'color.jpg'))

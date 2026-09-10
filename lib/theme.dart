@@ -32,14 +32,20 @@ class WeldzColors {
   /// Class palette, matching the server's overlay.py so a phone screenshot and
   /// a desktop prediction of the same weld read identically.
   static const classes = <String, Color>{
-    'crack': Color(0xFFE74C3C),
-    'discontinuity': Color(0xFFE67E22),
-    'overlap': Color(0xFF9B59B6),
-    'porosity': Color(0xFFE67E22),
-    'spatter': Color(0xFF1ABC9C),
-    'undercut': Color(0xFFF1C40F),
-    'weld_seam': Color(0xFF2ECC71),
-    'workpiece': Color(0xFFFFFF00),
+    // Mirrors weldz-server/overlay.py COLORS, which carries the full rationale.
+    // Short version: eight hues cannot all be told apart under colour blindness,
+    // so the palette is arranged such that every confusable pair leads to the
+    // same verdict (crack/discontinuity both reject, porosity/spatter both
+    // acceptable), and the four classes present on every frame were validated
+    // as a set. Keep in step with overlay.py, charts.js and inf-test/common.py.
+    'crack': Color(0xFFE66767),          // red    -- reject
+    'discontinuity': Color(0xFFD95926),  // orange -- reject
+    'undercut': Color(0xFFC98500),       // amber  -- rework
+    'porosity': Color(0xFF008300),       // green  -- acceptable
+    'spatter': Color(0xFF199E70),        // aqua   -- acceptable
+    'overlap': Color(0xFF9085E9),        // violet -- acceptable
+    'weld_seam': Color(0xFF3987E5),      // blue   -- structure
+    'workpiece': Color(0xFFE0479E),      // pink   -- structure
   };
 
   static Color forClass(String label) => classes[label] ?? const Color(0xFFC8C8C8);

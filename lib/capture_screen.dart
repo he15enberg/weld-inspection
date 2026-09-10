@@ -4,6 +4,8 @@
 // replaced by a spinner, so the live feed is still there behind the progress —
 // it makes a two-second round trip feel like a shutter rather than a stall.
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import 'api.dart';
@@ -65,7 +67,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
           'Measuring · ${(shot.bytes / 1024).round()} kB uploading');
 
       final report =
-          await Api(_settings.url, token: _settings.token).measure(shot);
+          await Api(_settings.url, token: _settings.token)
+              .measure(shot, settings: _settings);
 
       if (!mounted) return;
       setState(() {
@@ -142,10 +145,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
             child: _StatusPill(settings: _settings),
           ),
 
-          // aiming guide. Framing is the single biggest lever on detection
-          // quality -- the model was trained on welds that fill the frame -- so
-          // it is worth putting a target on screen rather than only in a README.
-          const Positioned.fill(child: IgnorePointer(child: _Reticle())),
+          // The region that will actually be analysed. Framing is the single
+          // biggest lever on detection quality -- the model was trained on
+          // welds that fill the frame -- and now that the server crops to a
+          // square, anything outside this box is not merely poorly framed, it
+          // is never looked at.
+          Positioned.fill(
+            child: IgnorePointer(child: _Roi(crop: _settings.crop)),
+          ),
 
           if (_busy)
             Positioned(
@@ -202,42 +209,102 @@ class _StatusPill extends StatelessWidget {
 }
 
 /// Corner brackets over the middle of the frame.
-class _Reticle extends StatelessWidget {
-  const _Reticle();
+/// The square the server will actually analyse, drawn over the live feed.
+///
+/// A centred square crop keeps the same pixels whichever way the frame is
+/// turned, so the region to draw is simply the centred `crop` square of the
+/// camera frame -- the quarter turn does not enter into it.
+///
+/// ARSCNView aspect-FILLS its bounds: the frame is scaled by the LARGER of the
+/// two ratios and the overflow falls off the screen. On a tall phone the sides
+/// of a 4:3 frame are already off-screen, which means the analysed square is
+/// WIDER than the viewport and its left and right edges cannot be drawn at
+/// all. What can be drawn -- and what actually matters -- is the band at the
+/// top and bottom that falls outside the square. Only edges that exist on
+/// screen are painted, so this stays honest at any screen aspect.
+///
+/// NOT verified on hardware. Aspect-fill is ARSCNView's documented default but
+/// no part of this has run on a device; if the bands sit wrong, this widget is
+/// the only place to correct it.
+class _Roi extends StatelessWidget {
+  const _Roi({required this.crop});
+
+  /// Square crop side in captured pixels, or 0 for no crop.
+  final int crop;
+
+  // ARKit's default world-tracking format on this hardware, which every stored
+  // capture confirms: 1920 x 1440, presented portrait once turned.
+  static const _frameShort = 1440.0;
+  static const _frameLong = 1920.0;
 
   @override
-  Widget build(BuildContext context) => Center(
-        child: FractionallySizedBox(
-          widthFactor: 0.78,
-          heightFactor: 0.42,
-          child: CustomPaint(painter: _ReticlePainter()),
-        ),
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, c) {
+          if (crop <= 0 || c.maxWidth <= 0 || c.maxHeight <= 0) {
+            return CustomPaint(painter: _RoiPainter(roi: null));
+          }
+          final scale = math.max(
+              c.maxWidth / _frameShort, c.maxHeight / _frameLong);
+          final side = crop * scale;
+          return CustomPaint(
+            painter: _RoiPainter(
+              roi: Rect.fromCenter(
+                center: Offset(c.maxWidth / 2, c.maxHeight / 2),
+                width: side,
+                height: side,
+              ),
+            ),
+          );
+        },
       );
 }
 
-class _ReticlePainter extends CustomPainter {
+class _RoiPainter extends CustomPainter {
+  _RoiPainter({required this.roi});
+
+  /// Null when cropping is off -- then there is no region to mark and the
+  /// overlay draws nothing rather than an aiming box that means nothing.
+  final Rect? roi;
+
   @override
   void paint(Canvas canvas, Size size) {
+    final r = roi;
+    if (r == null) return;
+
+    // dim what the model will never see
+    canvas.drawPath(
+      Path.combine(
+        PathOperation.difference,
+        Path()..addRect(Offset.zero & size),
+        Path()..addRect(r),
+      ),
+      Paint()..color = Colors.black.withValues(alpha: 0.42),
+    );
+
     final pen = Paint()
-      ..color = Colors.white.withValues(alpha: 0.55)
+      ..color = Colors.white.withValues(alpha: 0.70)
       ..strokeWidth = 2
-      ..strokeCap = StrokeCap.round
-      ..style = PaintingStyle.stroke;
+      ..strokeCap = StrokeCap.square;
 
-    const arm = 22.0;
-    void corner(Offset o, double dx, double dy) {
-      canvas.drawLine(o, o.translate(arm * dx, 0), pen);
-      canvas.drawLine(o, o.translate(0, arm * dy), pen);
+    // Only the edges actually on screen. On a tall phone the square is wider
+    // than the viewport, so the two vertical edges genuinely do not exist and
+    // drawing them would put a line where there is no boundary.
+    if (r.top > 0) {
+      canvas.drawLine(Offset(0, r.top), Offset(size.width, r.top), pen);
     }
-
-    corner(Offset.zero, 1, 1);
-    corner(Offset(size.width, 0), -1, 1);
-    corner(Offset(0, size.height), 1, -1);
-    corner(Offset(size.width, size.height), -1, -1);
+    if (r.bottom < size.height) {
+      canvas.drawLine(Offset(0, r.bottom), Offset(size.width, r.bottom), pen);
+    }
+    if (r.left > 0) {
+      canvas.drawLine(Offset(r.left, 0), Offset(r.left, size.height), pen);
+    }
+    if (r.right < size.width) {
+      canvas.drawLine(Offset(r.right, 0), Offset(r.right, size.height), pen);
+    }
   }
 
   @override
-  bool shouldRepaint(_ReticlePainter old) => false;
+  bool shouldRepaint(_RoiPainter old) => old.roi != roi;
 }
 
 class _Progress extends StatelessWidget {

@@ -21,6 +21,9 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final _url = TextEditingController();
   final _token = TextEditingController();
+  final _conf = TextEditingController();
+  final _rotate = TextEditingController();
+  final _crop = TextEditingController();
 
   String? _probe;
   bool _probing = false;
@@ -34,6 +37,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() {
         _url.text = s.url;
         _token.text = s.token;
+        _conf.text = s.conf.toStringAsFixed(2);
+        _rotate.text = s.rotate.toString();
+        _crop.text = s.crop.toString();
       });
     });
   }
@@ -42,6 +48,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _url.dispose();
     _token.dispose();
+    _conf.dispose();
+    _rotate.dispose();
+    _crop.dispose();
     super.dispose();
   }
 
@@ -62,13 +71,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _save() async {
-    await Settings.save(url: _url.text, token: _token.text);
+    // A bad number falls back to the default rather than blocking the save: a
+    // typo in a threshold field should not strand the operator on a screen.
+    final conf = Settings.clampConf(
+        double.tryParse(_conf.text.trim()) ?? Settings.defaultConf);
+    final rotate = _quarter(
+        int.tryParse(_rotate.text.trim()) ?? Settings.defaultRotate);
+    final crop = int.tryParse(_crop.text.trim()) ?? Settings.defaultCrop;
+
+    await Settings.save(url: _url.text, token: _token.text,
+        conf: conf, rotate: rotate, crop: crop);
     if (!mounted) return;
-    setState(() => _dirty = false);
+    // Write the accepted values back into the fields, so a clamped or snapped
+    // entry is visible instead of the screen showing something untrue.
+    setState(() {
+      _dirty = false;
+      _conf.text = conf.toStringAsFixed(2);
+      _rotate.text = rotate.toString();
+      _crop.text = crop.toString();
+    });
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Saved')),
+      SnackBar(content: Text('Saved · conf $conf · rotate $rotate'
+          '${crop > 0 ? ' · crop $crop' : ' · no crop'}')),
     );
   }
+
+  /// Rotation is only meaningful in quarter turns, and the server rounds to one
+  /// anyway -- so round here too, where it can be seen.
+  static int _quarter(int deg) => ((deg / 90).round() * 90) % 360;
 
   @override
   Widget build(BuildContext context) => SafeArea(
@@ -164,6 +194,79 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
             ),
+            _Section(
+              title: 'Model',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: _conf,
+                    autocorrect: false,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    onChanged: (_) => setState(() => _dirty = true),
+                    decoration: InputDecoration(
+                      labelText: 'Confidence threshold',
+                      helperMaxLines: 4,
+                      helperText:
+                          'Kept between ${Settings.confMin} and '
+                          '${Settings.confMax}. 0.25 is what the model was '
+                          'scored at. Lowering it does not uncover hidden '
+                          'defects — on real captures the median defect sits '
+                          'at 0.135, so 0.10 mostly admits boxes on whatever '
+                          'else is on the bench.',
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _rotate,
+                    autocorrect: false,
+                    keyboardType: TextInputType.number,
+                    onChanged: (_) => setState(() => _dirty = true),
+                    decoration: const InputDecoration(
+                      labelText: 'Rotate before inference (degrees)',
+                      helperMaxLines: 4,
+                      helperText:
+                          '270 for this phone. ARKit hands over the camera '
+                          'buffer sideways and nothing corrects it, so the '
+                          'part reaches the model on its end. 270 finds the '
+                          'weld seam in 9 of 9 test frames against 3 of 9 '
+                          'untouched — but 90 costs confidence, so the '
+                          'direction matters.',
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _crop,
+                    autocorrect: false,
+                    keyboardType: TextInputType.number,
+                    onChanged: (_) => setState(() => _dirty = true),
+                    decoration: const InputDecoration(
+                      labelText: 'Square crop (pixels, 0 for none)',
+                      helperMaxLines: 4,
+                      helperText:
+                          'The model only ever saw square images. The server '
+                          'snaps this down so the crop edges land on whole '
+                          'depth pixels — ask for 1392 and you get 1380 — '
+                          'because a crop that splits a depth pixel puts '
+                          'colour and depth out of step and spoils every '
+                          'millimetre.',
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: _dirty ? _save : null,
+                          child: const Text('Save'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
             const _Section(
               title: 'Inspection',
               note: 'Not wired yet',
@@ -182,13 +285,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     label: 'Quality level',
                     value: 'C',
                     why: 'ISO 5817 B / C / D. Tightens or relaxes every limit.',
-                  ),
-                  Divider(height: 22),
-                  _Inert(
-                    icon: Icons.tune,
-                    label: 'Confidence threshold',
-                    value: '0.25',
-                    why: 'Below about 0.10 the detection count climbs sharply.',
                   ),
                 ],
               ),
