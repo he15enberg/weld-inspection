@@ -116,8 +116,17 @@ class _ResultViewState extends State<ResultView> {
           child: ListView(
             padding: const EdgeInsets.only(bottom: 18),
             children: [
-              VerdictBanner(judgement: widget.report.judgement),
-              RuleList(judgement: widget.report.judgement),
+              // The gate stands in for the verdict rather than sitting
+              // beside it: a grade from an unusable photograph looks exactly
+              // like a real one, and showing both invites the number to be
+              // believed anyway.
+              if (widget.report.assessment.blocks)
+                CaptureGate(assessment: widget.report.assessment)
+              else ...[
+                VerdictBanner(judgement: widget.report.judgement),
+                RuleList(judgement: widget.report.judgement),
+                UtilisationList(judgement: widget.report.judgement),
+              ],
               AssessmentCard(assessment: widget.report.assessment),
               const SizedBox(height: 14),
               _Findings(report: widget.report),

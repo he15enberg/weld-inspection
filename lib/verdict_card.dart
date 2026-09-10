@@ -213,6 +213,60 @@ class AssessmentCard extends StatelessWidget {
           ],
           Text(assessment.summary,
               style: const TextStyle(fontSize: 12.5, height: 1.45)),
+          // Where the tightest rule actually is on the weld. The arithmetic is
+          // already done and shown above; this is the part only a look at the
+          // picture can supply.
+          if (assessment.bindingNote.isNotEmpty) ...[
+            const SizedBox(height: 9),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.place_outlined,
+                    size: 14, color: WeldzColors.blue),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(assessment.bindingNote,
+                      style: const TextStyle(
+                          fontSize: 11.5, height: 1.4,
+                          color: WeldzColors.textDim)),
+                ),
+              ],
+            ),
+          ],
+          if (assessment.beadQuality.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final b in assessment.beadQuality) _Chip(text: b),
+              ],
+            ),
+          ],
+          // Disagreement is information, not a fault. It never changes the
+          // verdict -- it tells a person the two readings parted company, which
+          // is exactly when a second look is worth the minute.
+          if (assessment.disagrees) ...[
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.help_outline, size: 14, color: WeldzColors.warn),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    assessment.reason.isEmpty
+                        ? 'The assessment reads this weld differently from the '
+                          'rules. Worth a second look.'
+                        : 'Reads this differently from the rules: '
+                          '${assessment.reason}',
+                    style: const TextStyle(
+                        fontSize: 11, height: 1.35, color: WeldzColors.warn),
+                  ),
+                ),
+              ],
+            ),
+          ],
           if (assessment.concerns.isNotEmpty) ...[
             const SizedBox(height: 10),
             Wrap(
@@ -334,4 +388,205 @@ class _Chip extends StatelessWidget {
             style:
                 const TextStyle(fontSize: 10.5, color: WeldzColors.textDim)),
       );
+}
+
+
+/// Shown INSTEAD of a verdict when the assessment says the photograph is not
+/// good enough to judge from.
+///
+/// Deliberately not shown beside the verdict. A grade computed from a blurred
+/// or badly framed capture looks exactly like a real one, and putting a
+/// caveat next to it invites the number to be believed anyway.
+class CaptureGate extends StatelessWidget {
+  const CaptureGate({super.key, required this.assessment});
+
+  final Assessment assessment;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: WeldzColors.warn.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: WeldzColors.warn.withValues(alpha: 0.45)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.no_photography_outlined,
+                    size: 20, color: WeldzColors.warn),
+                SizedBox(width: 10),
+                Text('RECAPTURE',
+                    style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.6,
+                        color: WeldzColors.warn)),
+              ],
+            ),
+            const SizedBox(height: 9),
+            Text(
+              assessment.summary.isEmpty
+                  ? 'This photograph is not clear enough to judge from.'
+                  : assessment.summary,
+              style: const TextStyle(fontSize: 12.5, height: 1.45),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Hold the phone landscape, fill the frame with the part, and '
+              'keep it still.',
+              style: TextStyle(
+                  fontSize: 11, height: 1.35, color: WeldzColors.textDim),
+            ),
+          ],
+        ),
+      );
+}
+
+/// The tunable rules, each as a bar against its limit.
+///
+/// The limit sits at 100% of the track and a breach runs past it, so being
+/// over reads as over rather than as a bar that has simply filled. An
+/// indeterminate rule is hatched rather than empty -- empty would read as
+/// "nothing found", and the whole point is that nothing was CHECKED.
+class UtilisationList extends StatelessWidget {
+  const UtilisationList({super.key, required this.judgement});
+
+  final Judgement judgement;
+
+  @override
+  Widget build(BuildContext context) {
+    if (judgement.utilisations.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      decoration: BoxDecoration(
+        color: WeldzColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: WeldzColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('RULES',
+                  style: TextStyle(
+                      fontSize: 10.5,
+                      letterSpacing: 0.8,
+                      fontWeight: FontWeight.w600,
+                      color: WeldzColors.textDim)),
+              const Spacer(),
+              if (judgement.score != null)
+                Text('score ${judgement.score!.toStringAsFixed(0)}',
+                    style: const TextStyle(
+                        fontSize: 10.5, color: WeldzColors.textFaint)),
+              if (judgement.rulesetVersion != null) ...[
+                const SizedBox(width: 8),
+                Text('v${judgement.rulesetVersion}',
+                    style: const TextStyle(
+                        fontSize: 10.5, color: WeldzColors.textFaint)),
+              ],
+            ],
+          ),
+          const SizedBox(height: 10),
+          for (final u in judgement.utilisations) _UtilRow(u: u),
+          if (judgement.offSeamIgnored > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              '${judgement.offSeamIgnored} detection'
+              '${judgement.offSeamIgnored == 1 ? '' : 's'} were not on the '
+              'weld and were left out of these rules.',
+              style: const TextStyle(
+                  fontSize: 10.5, height: 1.3, color: WeldzColors.textFaint),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _UtilRow extends StatelessWidget {
+  const _UtilRow({required this.u});
+
+  final Utilisation u;
+
+  @override
+  Widget build(BuildContext context) {
+    final pct = u.utilisation == null
+        ? 0.0
+        : (u.utilisation! * 100).clamp(0, 140).toDouble();
+    final colour = u.breached
+        ? WeldzColors.bad
+        : (pct > 80 ? WeldzColors.warn : WeldzColors.good);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 11),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(u.name,
+                    style: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w600)),
+              ),
+              Text(
+                u.indeterminate
+                    ? 'not measurable'
+                    : '${(u.utilisation! * 100).round()}% of limit',
+                style: TextStyle(
+                    fontSize: 10.5,
+                    color: u.indeterminate
+                        ? WeldzColors.warn
+                        : WeldzColors.textDim),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          // The track is the limit. 140% of it is as far as a bar is drawn --
+          // past that the number carries it, and a 1700% bar would tell you
+          // nothing a 140% bar does not.
+          LayoutBuilder(
+            builder: (context, c) => Stack(
+              children: [
+                Container(
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: WeldzColors.bg,
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+                if (!u.indeterminate)
+                  Container(
+                    height: 6,
+                    width: c.maxWidth * (pct / 140.0),
+                    decoration: BoxDecoration(
+                      color: colour,
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+                // the limit marker, at 100 of the 140 the track spans
+                Positioned(
+                  left: c.maxWidth * (100 / 140.0),
+                  child: Container(
+                      width: 1, height: 6, color: WeldzColors.textFaint),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(u.detail,
+              style: const TextStyle(
+                  fontSize: 10.5, color: WeldzColors.textFaint)),
+        ],
+      ),
+    );
+  }
 }

@@ -275,12 +275,59 @@ class RuleCheck {
       );
 }
 
+/// One tunable rule's standing: what was measured, its limit, and how close
+/// the two are. `utilisation` is normalised so 1.0 always means "at the limit"
+/// whichever way the comparator points, which is what lets a single bar render
+/// a `<=` rule and a `>=` rule without one of them reading backwards.
+class Utilisation {
+  const Utilisation({
+    required this.id,
+    required this.name,
+    required this.status,
+    required this.detail,
+    this.utilisation,
+    this.value,
+    this.limit,
+  });
+
+  final String id;
+  final String name;
+
+  /// `clear`, `breached`, or `indeterminate`.
+  final String status;
+  final String detail;
+
+  /// Null when the rule could not be measured -- which is NOT a pass.
+  final double? utilisation;
+  final double? value;
+  final double? limit;
+
+  bool get breached => status == 'breached';
+  bool get indeterminate => utilisation == null;
+
+  factory Utilisation.fromJson(Map<String, dynamic> j) => Utilisation(
+        id: j['id'] as String? ?? '',
+        name: j['name'] as String? ?? '',
+        status: j['status'] as String? ?? 'clear',
+        detail: j['detail'] as String? ?? '',
+        utilisation: (j['utilisation'] as num?)?.toDouble(),
+        value: (j['value'] as num?)?.toDouble(),
+        limit: (j['limit'] as num?)?.toDouble(),
+      );
+}
+
 class Judgement {
   const Judgement({
     required this.verdict,
     required this.headline,
     required this.checks,
     required this.noted,
+    this.score,
+    this.utilisations = const [],
+    this.binding,
+    this.rulesetVersion,
+    this.seamStatus,
+    this.offSeamIgnored = 0,
   });
 
   final Verdict verdict;
@@ -290,6 +337,27 @@ class Judgement {
   /// Classes that were detected but are acceptable on presence alone.
   final List<String> noted;
 
+  /// Weighted severity. A sound weld carrying three small pores scores a
+  /// handful of points; thirty of them does not.
+  final double? score;
+
+  final List<Utilisation> utilisations;
+
+  /// The rule closest to its limit -- the one worth naming.
+  final Utilisation? binding;
+
+  /// Which editable rule set produced this. Two captures judged under
+  /// different versions are not comparable, so it travels with the verdict.
+  final int? rulesetVersion;
+
+  /// `ok`, or why the seam could not be measured.
+  final String? seamStatus;
+
+  /// Detections the spatial gate set aside as not being on the weld.
+  final int offSeamIgnored;
+
+  bool get seamUsable => seamStatus == 'ok';
+
   static const empty = Judgement(
     verdict: Verdict.approve,
     headline: '',
@@ -297,14 +365,29 @@ class Judgement {
     noted: [],
   );
 
-  factory Judgement.fromJson(Map<String, dynamic> j) => Judgement(
-        verdict: Verdict.parse(j['verdict'] as String?),
-        headline: j['headline'] as String? ?? '',
-        checks: ((j['checks'] as List?) ?? [])
-            .map((c) => RuleCheck.fromJson(c as Map<String, dynamic>))
-            .toList(),
-        noted: ((j['noted'] as List?) ?? []).map((n) => '$n').toList(),
-      );
+  // Every new field is optional. An older server that knows none of them still
+  // produces a Judgement the app renders, which is what lets the server and
+  // the phone ship on different days.
+  factory Judgement.fromJson(Map<String, dynamic> j) {
+    final utils = ((j['utilisations'] as List?) ?? [])
+        .map((u) => Utilisation.fromJson(u as Map<String, dynamic>))
+        .toList();
+    final b = j['binding'];
+    return Judgement(
+      verdict: Verdict.parse(j['verdict'] as String?),
+      headline: j['headline'] as String? ?? '',
+      checks: ((j['checks'] as List?) ?? [])
+          .map((c) => RuleCheck.fromJson(c as Map<String, dynamic>))
+          .toList(),
+      noted: ((j['noted'] as List?) ?? []).map((n) => '$n').toList(),
+      score: (j['score'] as num?)?.toDouble(),
+      utilisations: utils,
+      binding: b is Map<String, dynamic> ? Utilisation.fromJson(b) : null,
+      rulesetVersion: (j['ruleset_version'] as num?)?.toInt(),
+      seamStatus: (j['seam'] as Map<String, dynamic>?)?['status'] as String?,
+      offSeamIgnored: (j['off_seam_ignored'] as num?)?.toInt() ?? 0,
+    );
+  }
 }
 
 /// The VLM's read. Advisory: it explains the verdict and never changes it.
@@ -315,6 +398,12 @@ class Assessment {
     this.concerns = const [],
     this.imageQuality,
     this.missedRejectable = const [],
+    this.usable = true,
+    this.beadQuality = const [],
+    this.bindingNote = '',
+    this.visualFlags = const [],
+    this.agreesWithVerdict,
+    this.reason = '',
     this.error,
     this.ms,
   });
@@ -331,12 +420,36 @@ class Assessment {
   /// Surfaced as a warning; deliberately does NOT change the verdict.
   final List<String> missedRejectable;
 
+  /// The gate. False means the photograph is not good enough to judge from,
+  /// and the app says so INSTEAD of showing a verdict -- a grade computed from
+  /// a blurred or badly framed capture is worse than no grade.
+  final bool usable;
+
+  /// What the bead looks like: uniform, ropey, poor wetting, and so on.
+  final List<String> beadQuality;
+
+  /// Where on the weld the tightest rule is. The model is told which rule that
+  /// is and what it measured; it points at the place rather than recomputing.
+  final String bindingNote;
+
+  final List<String> visualFlags;
+
+  /// The model's own read against the verdict it was given. Null when it did
+  /// not say. Disagreement raises a flag for a person; it changes nothing.
+  final bool? agreesWithVerdict;
+  final String reason;
+
   final String? error;
   final int? ms;
 
   bool get isReady => status == 'ready' && summary.isNotEmpty;
   bool get isDisabled => status == 'disabled';
   bool get poorImage => imageQuality == 'poor';
+
+  /// Only a ready assessment can block. A VLM that is off or unreachable must
+  /// never stop a capture being shown.
+  bool get blocks => status == 'ready' && !usable;
+  bool get disagrees => agreesWithVerdict == false;
 
   factory Assessment.fromJson(Map<String, dynamic> j) => Assessment(
         status: j['status'] as String? ?? 'failed',
@@ -345,6 +458,16 @@ class Assessment {
         imageQuality: j['image_quality'] as String?,
         missedRejectable:
             ((j['missed_rejectable'] as List?) ?? []).map((m) => '$m').toList(),
+        // defaults to usable: an older service says nothing, and silence must
+        // not be read as "this capture is no good"
+        usable: j['usable'] as bool? ?? true,
+        beadQuality:
+            ((j['bead_quality'] as List?) ?? []).map((b) => '$b').toList(),
+        bindingNote: (j['binding_rule_note'] as String? ?? '').trim(),
+        visualFlags:
+            ((j['visual_flags'] as List?) ?? []).map((v) => '$v').toList(),
+        agreesWithVerdict: j['agrees_with_verdict'] as bool?,
+        reason: (j['reason'] as String? ?? '').trim(),
         error: j['error'] as String?,
         ms: (j['ms'] as num?)?.toInt(),
       );
