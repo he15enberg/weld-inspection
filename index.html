@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weldz — inspection records</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<aside class="side">
+  <div class="side-brand">
+    <span class="mark"></span>
+    <div>
+      <strong>Weldz</strong>
+      <span id="brandSub">inspection records</span>
+    </div>
+  </div>
+
+  <nav id="nav">
+    <button class="nav-item is-on" data-view="overview">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="10" width="4" height="8" rx="1"/><rect x="8" y="5" width="4" height="13" rx="1"/><rect x="14" y="2" width="4" height="16" rx="1"/></svg>
+      Overview
+    </button>
+    <button class="nav-item" data-view="captures">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+      Captures
+    </button>
+    <button class="nav-item" data-view="quality">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 15 L7 8 L11 12 L18 3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Quality
+    </button>
+    <button class="nav-item" data-view="rules">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h9M3 15h12" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="15.5" cy="10" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+      Rules
+    </button>
+  </nav>
+
+  <div class="side-foot">
+    <div class="kv"><span>Model</span><b id="sideModel">—</b></div>
+    <div class="kv"><span>Storage</span><b id="sideStore">—</b></div>
+    <div class="kv"><span>Assessment</span><b id="sideVlm">—</b></div>
+  </div>
+</aside>
+
+<main>
+  <!-- --------------------------------------------------------- overview -->
+  <section id="overview" class="view is-on">
+    <header class="page">
+      <h1>Overview</h1>
+      <p>Every inspection recorded by this server.</p>
+    </header>
+
+    <div class="tiles" id="tiles"></div>
+
+    <figure class="card wide">
+      <figcaption>
+        <h2>Verdicts per day</h2>
+        <p>Composition of every capture, by day. Hover a day for the split.</p>
+      </figcaption>
+      <div class="plot" id="perday"></div>
+      <div class="legend" id="perdayLegend"></div>
+    </figure>
+
+    <figure class="card wide">
+      <figcaption>
+        <h2>Each verdict on its own axis</h2>
+        <p>
+          The same three series again, unstacked and sharing one scale. A
+          stacked bar shows composition well and trend badly — only the bottom
+          segment sits on a baseline, so rework and reject are hard to follow
+          across days. These three panels fix that without adding a second axis.
+        </p>
+      </figcaption>
+      <div class="plot small-multiples" id="multiples"></div>
+    </figure>
+
+    <div class="grid">
+      <figure class="card">
+        <figcaption>
+          <h2>Reject rate</h2>
+          <p>
+          Share of captures rejected each day, against the period average.
+          Hollow points are days with fewer than three captures — a rate from
+          one capture is noise, so those are plotted but not trusted, and the
+          axis is scaled on the days that carry weight.
+        </p>
+        </figcaption>
+        <div class="plot" id="rate"></div>
+      </figure>
+
+      <figure class="card">
+        <figcaption>
+          <h2>Captures by hour</h2>
+          <p>When inspections actually happen.</p>
+        </figcaption>
+        <div class="plot" id="hours"></div>
+      </figure>
+    </div>
+  </section>
+
+  <!-- --------------------------------------------------------- captures -->
+  <section id="captures" class="view">
+    <header class="page">
+      <h1>Captures</h1>
+      <p>Newest first. Click a row for the full record.</p>
+    </header>
+
+    <div class="filters">
+      <label>Verdict
+        <select id="fVerdict">
+          <option value="">any</option>
+          <option value="approve">approve</option>
+          <option value="rework">rework</option>
+          <option value="reject">reject</option>
+        </select>
+      </label>
+      <label>Defect
+        <select id="fLabel"><option value="">any</option></select>
+      </label>
+      <label>From <input type="date" id="fFrom"></label>
+      <label>To <input type="date" id="fTo"></label>
+      <button class="ghost" id="fClear">Clear</button>
+      <span class="count" id="fCount"></span>
+    </div>
+
+    <div class="rows" id="rows"></div>
+    <div class="pager">
+      <button class="ghost" id="prev">Previous</button>
+      <span id="page"></span>
+      <button class="ghost" id="next">Next</button>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------- quality -->
+  <section id="quality" class="view">
+    <header class="page">
+      <h1>Quality</h1>
+      <p>What is being found, how big it is, and how much to trust the sizes.</p>
+    </header>
+
+    <div class="grid">
+      <figure class="card">
+        <figcaption>
+          <h2>Defects by class</h2>
+          <p>How often each class is detected.</p>
+        </figcaption>
+        <div class="plot" id="classes"></div>
+      </figure>
+
+      <figure class="card">
+        <figcaption>
+          <h2>Size per class</h2>
+          <p>
+            Median with the 5th–95th range. Median, not mean — one large pore
+            drags a mean and leaves the typical case unreadable.
+          </p>
+        </figcaption>
+        <div class="plot" id="sizes"></div>
+      </figure>
+    </div>
+
+    <figure class="card wide">
+      <figcaption>
+        <h2>Framing against verdict</h2>
+        <p>
+          Average share of the frame the workpiece fills, per verdict. The model
+          was trained on welds that fill the frame — if the reject bar sits well
+          left of the approve bar, poor results are a framing problem, not a
+          model problem.
+        </p>
+      </figcaption>
+      <div class="plot" id="framing"></div>
+    </figure>
+
+    <figure class="card wide">
+      <figcaption>
+        <h2>Depth coverage per detection</h2>
+        <p>
+          What fraction of each mask had a usable LiDAR reading. Mass on the
+          left means most millimetre figures rest on very few pixels, whatever
+          the number says — this is the reliability distribution behind every
+          measurement on this dashboard.
+        </p>
+      </figcaption>
+      <div class="plot" id="depthHist"></div>
+    </figure>
+
+    <details class="card wide data">
+      <summary>Show the numbers as a table</summary>
+      <div id="statsTable"></div>
+    </details>
+  </section>
+
+
+  <!-- ------------------------------------------------------------ rules -->
+  <section id="rules" class="view">
+    <header class="page">
+      <h1>Rules</h1>
+      <p>
+        The tunable layer. Cracks and discontinuities are not here — those are
+        fixed in the server's code, because a limit nobody can edit is the
+        point of them.
+      </p>
+    </header>
+
+    <div class="ruleset-bar">
+      <span class="count" id="rulesVersion"></span>
+      <button class="ghost" id="rulesReload">Reload</button>
+      <button class="ghost" id="rulesPreview">Preview impact</button>
+      <button class="primary" id="rulesSave" disabled>Save</button>
+    </div>
+
+    <div id="rulesError" class="rules-error" hidden></div>
+    <div class="rules" id="rulesList"></div>
+
+    <figure class="card wide">
+      <figcaption>
+        <h2>Score bands</h2>
+        <p>
+          Every defect adds weight by class and size. These two numbers turn
+          that sum into a verdict — which is what lets a sound weld carry a few
+          small pores instead of failing on the first one found.
+        </p>
+      </figcaption>
+      <div class="bands" id="bands"></div>
+    </figure>
+
+    <div id="rescore" class="card wide" hidden></div>
+  </section>
+
+</main>
+
+<!-- capture detail -->
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-head">
+    <button class="ghost" id="sheetClose">Back</button>
+    <span id="sheetId" class="mono"></span>
+  </div>
+  <div class="sheet-body" id="sheetBody"></div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
