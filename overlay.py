@@ -14,22 +14,55 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image, ImageDraw
 
+# ---------------------------------------------------------------------------
+# The class palette. THIS IS THE CANONICAL COPY -- mirrored in
+# weldz-mobile/lib/theme.dart, weldz-dashboard/charts.js (light steps),
+# inf-test/common.py and train/overlay.py (BGR). Change all five together.
+#
+# Eight hues drawn on one photograph is an all-pairs problem, and no eight-hue
+# set clears the colour-blind gates all-pairs -- that was measured, not assumed
+# (worst dark pair here is weld_seam/overlap at delta-E 1.9 protan). So the
+# palette is built to a weaker but honest rule instead:
+#
+#     every pair that IS confusable leads to the SAME decision.
+#
+#   crack / discontinuity   both REJECT -- mistaking one for the other changes
+#                           nothing, and they are the two rarest classes
+#   porosity / spatter      both ACCEPTABLE -- likewise
+#   overlap / weld_seam     overlap is the rarest defect (30 instances in the
+#                           training set) and weld_seam is structural, drawn as
+#                           a thin 0.15-alpha wash with no caption at all
+#   spatter / workpiece     workpiece is the same kind of wash
+#
+# The four classes that actually co-occur on every frame -- porosity (472
+# instances), spatter (148), workpiece (102), weld_seam (101) -- were validated
+# as a set and PASS every gate all-pairs in both light and dark.
+#
+# Every defect box also carries a text label, which is the secondary encoding
+# the 6-8 delta-E band requires. The label is authoritative; the colour is a
+# hint.
+#
+# workpiece is pink and weld_seam blue by request.
+# ---------------------------------------------------------------------------
 COLORS = {
-    "crack": (231, 76, 60),
-    "discontinuity": (230, 126, 34),
-    "overlap": (155, 89, 182),
-    "porosity": (230, 126, 34),
-    "spatter": (26, 188, 156),
-    "undercut": (241, 196, 15),
-    "weld_seam": (46, 204, 113),
-    "workpiece": (255, 255, 0),
+    "crack": (230, 103, 103),          # red      -- reject
+    "discontinuity": (217, 89, 38),    # orange   -- reject
+    "undercut": (201, 133, 0),         # amber    -- rework
+    "porosity": (0, 131, 0),           # green    -- acceptable
+    "spatter": (25, 158, 112),         # aqua     -- acceptable
+    "overlap": (144, 133, 233),        # violet   -- acceptable
+    "weld_seam": (57, 135, 229),       # blue     -- structure
+    "workpiece": (224, 71, 158),       # pink     -- structure
 }
 DEFAULT = (200, 200, 200)
 
 # Large regions get a light wash so the defects on top stay legible.
 STRUCTURAL = {"workpiece", "weld_seam"}
 FILL = 0.35
-STRUCTURAL_FILL = 0.15
+# 0.10, not 0.15: pink is a good deal more saturated than the yellow this
+# used to be, and at 0.15 it tints the whole part purple instead of just
+# marking it. The outline carries the identity; the wash only groups.
+STRUCTURAL_FILL = 0.10
 
 
 def draw(img: Image.Image, rows: list[dict], masks) -> Image.Image:

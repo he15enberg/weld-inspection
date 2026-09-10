@@ -35,7 +35,17 @@ IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
 NUM_SELECT = 300
 
-CKPT = Path(os.environ.get("WELDZ_CKPT", "checkpoint_best_ema.pth"))
+HERE = Path(__file__).resolve().parent
+
+# Absolute, always. rfdetr records the path it was given as the checkpoint's
+# `pretrain_weights` and later reloads it -- and it resolves a BARE filename
+# against its own cache, ~/.roboflow/models/. So a relative path passes the
+# exists() check here (the cwd happens to be right) and then fails deep inside
+# from_checkpoint with a FileNotFoundError pointing at a directory nobody
+# mentioned. resolve() also absolutises a relative WELDZ_CKPT.
+CKPT = Path(os.environ.get("WELDZ_CKPT") or HERE / "checkpoint_best_ema.pth") \
+    .expanduser().resolve()
+
 DEVICE = os.environ.get("WELDZ_DEVICE", "cuda")
 
 # Index order the dataset loader derives: annotated COCO categories, filtered,

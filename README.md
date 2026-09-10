@@ -28,6 +28,43 @@ cloudflared tunnel --url http://localhost:8000
 The tunnel dials **out**, so there is no firewall rule to add, and the phone
 gets HTTPS — which iOS App Transport Security requires anyway.
 
+### A permanent hostname
+
+A quick tunnel issues a new random `*.trycloudflare.com` on every restart. For a
+stable URL use a **named tunnel** — which needs a domain on Cloudflare's
+nameservers:
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create weldz
+cloudflared tunnel route dns weldz weldz.<your-domain>
+cloudflared tunnel run --url http://localhost:8000 weldz
+```
+
+Then put that hostname in `weldz-mobile/lib/settings.dart` as `defaultUrl`.
+
+No domain? `tailscale funnel 8000` gives a stable `*.ts.net` hostname with a
+valid cert and needs no domain at all. Don't reach for ngrok — its free tier
+moved to 2-hour sessions and random URLs in early 2026.
+
+### WELDZ_TOKEN
+
+Optional, and **off by default** — unset leaves the server open, which keeps a
+quick tunnel usable with no ceremony:
+
+```bash
+set WELDZ_TOKEN=some-shared-secret
+```
+
+Worth setting once the hostname is permanent. A stable public URL pointing at
+this workstation otherwise lets anyone who learns it POST images to the GPU and
+read the results back.
+
+When set, both endpoints require an `X-Weldz-Token` header and answer 401
+without it. The comparison uses `secrets.compare_digest`, so a wrong guess can't
+be narrowed down by timing the reply. `/health` reports `"auth": true` when it
+is on, and startup logs which mode it came up in.
+
 ## Files
 
 | | |
