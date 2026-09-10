@@ -11,7 +11,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 
 class Capture {
-  const Capture({
+  // Not const: depthMetres memoises its decode.
+  Capture({
     required this.jpeg,
     required this.depth,
     required this.confidence,
@@ -35,6 +36,8 @@ class Capture {
   final Uint8List confidence;
 
   final int depthWidth, depthHeight;
+
+  Float32List? _metres;
 
   /// The size the intrinsics are quoted for -- NOT the depth grid size.
   final int imageWidth, imageHeight;
@@ -64,6 +67,27 @@ class Capture {
 
   /// Roughly what will go over the wire, for the progress line.
   int get bytes => jpeg.length + depth.length + confidence.length;
+
+  /// Depth in metres, decoded from the uint16 millimetres on the wire.
+  ///
+  /// Memoised: the depth view and both point clouds each want it, and it is
+  /// ~49k samples. Zero stays zero — that is ARKit's "no reading", not a
+  /// surface touching the lens.
+  ///
+  /// A channel Uint8List is a view into a larger buffer, so the byte offset
+  /// must be passed to asUint16List. Reading from 0 would decode the message
+  /// header as depth.
+  Float32List get depthMetres {
+    final cached = _metres;
+    if (cached != null) return cached;
+    final raw =
+        depth.buffer.asUint16List(depth.offsetInBytes, depth.lengthInBytes ~/ 2);
+    final out = Float32List(raw.length);
+    for (var i = 0; i < raw.length; i++) {
+      out[i] = raw[i] / 1000.0;
+    }
+    return _metres = out;
+  }
 }
 
 class CaptureFailed implements Exception {

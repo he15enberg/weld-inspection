@@ -22,6 +22,7 @@ class Detection {
     this.distanceM,
     this.depthFill,
     this.uncertaintyMm,
+    this.maskPng,
   });
 
   final String label;
@@ -31,6 +32,13 @@ class Detection {
   /// Fraction of the mask that had a usable depth reading. A size resting on a
   /// handful of pixels deserves to be flagged, not hidden.
   final double? depthFill;
+
+  /// The mask as a PNG, already downsampled server-side to the depth grid.
+  /// Used to crop the point cloud; ~300 bytes for a typical blob, which is why
+  /// it is cheap enough to ship at all.
+  final Uint8List? maskPng;
+
+  bool get hasMask => maskPng != null && maskPng!.isNotEmpty;
 
   bool get hasSize => widthMm != null && heightMm != null;
 
@@ -49,6 +57,8 @@ class Detection {
       distanceM: f('distance_m'),
       depthFill: f('depth_fill'),
       uncertaintyMm: f('uncertainty_mm'),
+      maskPng:
+          j['mask_png'] is String ? base64Decode(j['mask_png'] as String) : null,
     );
   }
 }
@@ -66,6 +76,25 @@ class Report {
   final Map<String, int> timingMs;
 
   int get serverMs => timingMs['total'] ?? 0;
+
+  /// The workpiece mask, for cropping the point cloud to the part. Falls back
+  /// to the weld seam, then to nothing — a full-frame cloud is a reasonable
+  /// answer when the model found no structure to crop to.
+  Uint8List? get cropMask {
+    for (final want in ['workpiece', 'weld_seam']) {
+      for (final d in detections) {
+        if (d.label == want && d.hasMask) return d.maskPng;
+      }
+    }
+    return null;
+  }
+
+  String get cropLabel {
+    for (final want in ['workpiece', 'weld_seam']) {
+      if (detections.any((d) => d.label == want && d.hasMask)) return want;
+    }
+    return 'none';
+  }
 }
 
 class ApiError implements Exception {
@@ -76,9 +105,17 @@ class ApiError implements Exception {
 }
 
 class Api {
-  Api(this.baseUrl);
+  Api(this.baseUrl, {this.token = ''});
 
   final String baseUrl;
+
+  /// Sent as `X-Weldz-Token` when non-empty. The server only enforces it if it
+  /// was started with WELDZ_TOKEN set, so an empty token stays compatible with
+  /// an open server.
+  final String token;
+
+  Map<String, String> get _headers =>
+      token.isEmpty ? const {} : {'X-Weldz-Token': token};
 
   /// Generous: RF-DETR at 1272 plus an upload on a phone network.
   static const timeout = Duration(seconds: 45);
@@ -92,7 +129,7 @@ class Api {
 
   Future<bool> health() async {
     try {
-      final r = await http.get(_url('/health')).timeout(timeout);
+      final r = await http.get(_url('/health'), headers: _headers).timeout(timeout);
       return r.statusCode == 200 &&
           (jsonDecode(r.body) as Map<String, dynamic>)['ok'] == true;
     } catch (_) {
@@ -102,6 +139,7 @@ class Api {
 
   Future<Report> measure(Capture c, {double confidence = 0.25}) async {
     final req = http.MultipartRequest('POST', _url('/measure'))
+      ..headers.addAll(_headers)
       ..fields['meta'] = jsonEncode({
         'image_width': c.imageWidth,
         'image_height': c.imageHeight,
@@ -130,6 +168,9 @@ class Api {
       throw ApiError('could not reach the server: $e');
     }
 
+    if (res.statusCode == 401) {
+      throw const ApiError('server rejected the token — check it in settings');
+    }
     if (res.statusCode != 200) {
       // FastAPI puts the reason in `detail`; surface it rather than a bare code
       String detail = res.body;

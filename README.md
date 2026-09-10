@@ -29,25 +29,93 @@ The symptom is `Cannot find 'ARSessionManager' in scope`.
 
 Needs **iOS 16+** and a LiDAR device (iPhone 12 Pro or newer Pro).
 
-On first launch, tap the pill at top-left to set the server URL — the
-cloudflared quick tunnel hands out a new hostname each time it starts. `https://`
-is assumed if you leave it off.
+## The server URL
+
+Asked for **once, the first time it is needed**, then remembered. Not on every
+launch and not on every capture — a `cloudflared` quick tunnel issues a new
+hostname each time it starts, so that works out to once per tunnel.
+
+The pill at **top-left** shows where captures are going and is the only way in.
+Tap it when the tunnel restarts and paste the new hostname. `https://` is assumed
+if you leave it off.
+
+The dialog has a **Test** button that calls `/health` — worth using, because
+otherwise a stale URL is only discovered *after* a capture has been taken and
+thrown away. It reports whether the server answered **and** whether the model
+loaded, which are different failures.
+
+Clearing the field forgets the stored URL, so the next capture asks again.
+
+`Token` is only needed if the server was started with `WELDZ_TOKEN` set.
+
+### Making it permanent later
+
+Put a hostname in `lib/settings.dart` and rebuild:
+
+```dart
+static const defaultUrl = 'your-host.example.com';
+```
+
+A stored value still wins, so it is only a fallback. A named Cloudflare tunnel
+needs a domain on their nameservers; `tailscale funnel 8000` gives a stable
+`*.ts.net` hostname without one.
 
 ## Files
 
 ```
 lib/
-  main.dart        preview → capture → result, three states
-  capture.dart     MethodChannel "weldz/capture"
-  api.dart         multipart POST, typed response
-  result.dart      annotated image + detection list
-  settings.dart    server URL, persisted
-  ar_preview.dart  UiKitView over the shared session
+  main.dart              nav shell: Capture · History · Settings
+  theme.dart             blue + Poppins, the class palette, PageTitle
+
+  capture_screen.dart    preview, reticle, shutter, result
+  capture.dart           MethodChannel "weldz/capture"
+  ar_preview.dart        UiKitView over the shared session
+  api.dart               multipart POST, typed response
+  result.dart            the five views + the findings list
+
+  depth_view.dart        colourised LiDAR depth
+  point_cloud.dart       unprojection, colouring, mask cropping
+  point_cloud_view.dart  orbiting viewer (drawRawAtlas)
+
+  settings.dart          server URL + token, persisted
+  settings_screen.dart   server section (real) + the rest (inert)
+  history_screen.dart    fixtures, clearly labelled as such
 
 ios/Runner/
   ARSessionManager.swift   the session, the channel, the payload
   ARPreviewFactory.swift   the platform view
 ```
+
+## The five result views
+
+| tab | where it comes from |
+|---|---|
+| **RGB** | the capture's own JPEG |
+| **Segments** | the server's annotated JPEG — masks and boxes already drawn |
+| **Depth** | the depth map, colourised on-device over this frame's near/far |
+| **Cloud** | every depth sample, unprojected here and coloured from the photo |
+| **Part** | the same cloud, cropped to the workpiece mask |
+
+Only *Segments* comes back drawn. The other four are built from bytes the phone
+already holds, so nothing is round-tripped for them — and both clouds are built
+**lazily**, on first visit, because unprojecting 49k points and decoding the
+JPEG for colour is not work to do for a tab nobody opens.
+
+**Part** needs the mask, which is the one thing the server adds beyond numbers:
+each detection carries `mask_png`, already downsampled to the depth grid. A
+typical blob is ~300 bytes, so it costs nothing — and cropping happens in depth
+space anyway, so a full-resolution mask would be pointless.
+
+If the model finds no `workpiece` or `weld_seam`, Part shows an empty cloud and
+says why, rather than quietly showing the full frame under a label claiming
+otherwise.
+
+## Framing matters more than anything in this app
+
+The reticle on the live view is not decoration. The model was trained on welds
+that **fill the frame**; a small part at distance scores badly and finds no
+seam. Getting the workpiece inside those brackets is the single largest lever on
+result quality, which is why it is on screen rather than only in this file.
 
 ## Three things in the Swift that are hard-won
 
