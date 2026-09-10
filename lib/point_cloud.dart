@@ -12,6 +12,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'capture.dart';
+import 'roi.dart';
 
 class PointCloud {
   const PointCloud({
@@ -98,26 +99,43 @@ Future<({Uint8List bytes, int width, int height})?> _decodeRgba(
 ///
 /// [mask] is one byte per depth sample; non-zero keeps the point. [step] thins
 /// the grid — 1 is the full 256x192.
+/// [roi] must be the one from the report whose [mask] is being passed. The
+/// mask arrives sized to the ANALYSED crop, so the depth grid has to be cut to
+/// the same rectangle or the two are indexed against different geometry — which
+/// is not a subtle error: at full frame the mask is 33,856 entries against
+/// 49,152 and the workpiece view comes back all but empty.
 Future<PointCloud> buildCloud(
   Capture c, {
   Uint8List? mask,
+  Roi? roi,
   int step = 1,
 }) async {
   final rgb = await _decodeRgba(c.jpeg);
-  final depth = c.depthMetres;
-  final dw = c.depthWidth, dh = c.depthHeight;
 
-  // Intrinsics are quoted for the CAPTURED IMAGE, so scale them onto the depth
-  // grid. Getting this wrong puts every point in the wrong place — and it does
-  // so plausibly, which is why it is worth stating.
-  final sx = dw / c.imageWidth;
-  final sy = dh / c.imageHeight;
-  final fx = c.fx * sx, fy = c.fy * sy;
-  final cx = c.cx * sx, cy = c.cy * sy;
+  // Intrinsics are quoted for the CAPTURED IMAGE; DepthGrid scales them onto
+  // the depth grid and moves the principal point by the crop origin. Getting
+  // that wrong puts every point in the wrong place — and it does so plausibly,
+  // which is why it lives in one place rather than here.
+  final grid = (roi != null && roi.isCentred(c))
+      ? DepthGrid.cropped(c, roi)
+      : DepthGrid.full(c);
+  final depth = grid.metres;
+  final dw = grid.width, dh = grid.height;
+  final fx = grid.fx, fy = grid.fy;
+  final cx = grid.cx, cy = grid.cy;
 
-  // depth grid -> image grid, for sampling colour
-  final imgScaleX = rgb == null ? 0.0 : rgb.width / dw;
-  final imgScaleY = rgb == null ? 0.0 : rgb.height / dh;
+  // depth grid -> image grid, for sampling colour. When the depth was cropped
+  // the colour has to be sampled from the matching window of the full JPEG,
+  // hence the origin as well as the scale.
+  final colourX = roi != null && roi.isCentred(c) ? roi.colourX : 0;
+  final colourY = roi != null && roi.isCentred(c) ? roi.colourY : 0;
+  final colourW = roi != null && roi.isCentred(c) ? roi.colourWidth : c.imageWidth;
+  final colourH =
+      roi != null && roi.isCentred(c) ? roi.colourHeight : c.imageHeight;
+  final imgScaleX = rgb == null ? 0.0 : (rgb.width / c.imageWidth) * (colourW / dw);
+  final imgScaleY = rgb == null ? 0.0 : (rgb.height / c.imageHeight) * (colourH / dh);
+  final imgOriginX = rgb == null ? 0.0 : (rgb.width / c.imageWidth) * colourX;
+  final imgOriginY = rgb == null ? 0.0 : (rgb.height / c.imageHeight) * colourY;
 
   var zMin = double.infinity, zMax = -double.infinity;
   for (var i = 0; i < depth.length; i++) {
@@ -139,13 +157,20 @@ Future<PointCloud> buildCloud(
       if (!_plausible(z)) continue;
       if (mask != null && (i >= mask.length || mask[i] == 0)) continue;
 
+      // A quarter turn clockwise, so the cloud stands the same way up as the
+      // photograph: `_Image` wraps every picture in RotatedBox(quarterTurns: 1)
+      // to undo ARKit's landscape buffer, and the cloud had no equivalent — so
+      // it read a quarter turn anticlockwise of everything else. In screen axes
+      // (y down) a clockwise turn is (x, y) -> (-y, x).
+      xs.add(-(v - cy) / fy * z);
       xs.add((u - cx) / fx * z);
-      xs.add((v - cy) / fy * z);
       xs.add(z);
 
       if (rgb != null) {
-        final ix = (u * imgScaleX).round().clamp(0, rgb.width - 1);
-        final iy = (v * imgScaleY).round().clamp(0, rgb.height - 1);
+        final ix =
+            (imgOriginX + u * imgScaleX).round().clamp(0, rgb.width - 1);
+        final iy =
+            (imgOriginY + v * imgScaleY).round().clamp(0, rgb.height - 1);
         final o = (iy * rgb.width + ix) * 4;
         cols.add((0xFF << 24) |
             (rgb.bytes[o] << 16) |

@@ -15,13 +15,19 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import 'capture.dart';
+import 'roi.dart';
 import 'point_cloud.dart' show depthColour, depthRamp;
 import 'theme.dart';
 
 class DepthView extends StatefulWidget {
-  const DepthView({super.key, required this.capture});
+  const DepthView({super.key, required this.capture, this.roi});
 
   final Capture capture;
+
+  /// The analysed region. Given, the view shows only that -- so this tab and
+  /// the picture tabs are the same field of view, and the depth shown is the
+  /// depth the millimetres were actually taken from.
+  final Roi? roi;
 
   @override
   State<DepthView> createState() => _DepthViewState();
@@ -31,6 +37,12 @@ class _DepthViewState extends State<DepthView> {
   ui.Image? _image;
   double _near = 0, _far = 0;
   double _fill = 0;
+
+  /// Decoding is async, and `_fill` cannot distinguish "not measured yet" from
+  /// "measured, and there is nothing". Without this the first build renders the
+  /// no-depth message before the decode has even run -- which reads as a bug,
+  /// because a capture always carries a depth buffer.
+  bool _done = false;
 
   @override
   void initState() {
@@ -46,8 +58,12 @@ class _DepthViewState extends State<DepthView> {
 
   Future<void> _build() async {
     final c = widget.capture;
-    final depth = c.depthMetres;
-    final w = c.depthWidth, h = c.depthHeight;
+    final r = widget.roi;
+    final grid = (r != null && r.isCentred(c))
+        ? DepthGrid.cropped(c, r)
+        : DepthGrid.full(c);
+    final depth = grid.metres;
+    final w = grid.width, h = grid.height;
 
     var near = double.infinity, far = -double.infinity;
     var valid = 0;
@@ -59,7 +75,12 @@ class _DepthViewState extends State<DepthView> {
       }
     }
     if (valid == 0) {
-      if (mounted) setState(() => _fill = 0);
+      if (mounted) {
+        setState(() {
+          _fill = 0;
+          _done = true;
+        });
+      }
       return;
     }
     final span = (far - near).abs() < 1e-6 ? 1.0 : far - near;
@@ -95,6 +116,7 @@ class _DepthViewState extends State<DepthView> {
         _near = near;
         _far = far;
         _fill = valid / depth.length;
+        _done = true;
       });
     });
   }
@@ -102,16 +124,19 @@ class _DepthViewState extends State<DepthView> {
   @override
   Widget build(BuildContext context) {
     final img = _image;
-    if (_fill == 0) {
-      return const Center(
-        child: Text('No depth in this frame',
-            style: TextStyle(color: WeldzColors.textFaint, fontSize: 13)),
-      );
-    }
-    if (img == null) {
+    // Order matters: still working comes FIRST. Reporting no depth while the
+    // decode is in flight is the same message for two different situations,
+    // and only one of them is worth telling anyone about.
+    if (!_done || (img == null && _fill > 0)) {
       return const Center(
         child: SizedBox(
             width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+    if (_fill == 0 || img == null) {
+      return const Center(
+        child: Text('No depth in this frame',
+            style: TextStyle(color: WeldzColors.textFaint, fontSize: 13)),
       );
     }
 

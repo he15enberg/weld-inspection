@@ -11,6 +11,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import 'capture.dart';
+import 'roi.dart';
 import 'settings.dart';
 
 class Detection {
@@ -71,6 +72,7 @@ class Report {
     required this.timingMs,
     this.judgement = Judgement.empty,
     this.assessment = const Assessment(status: 'disabled'),
+    this.roi,
   });
 
   /// The capture with masks and boxes already drawn, from the server.
@@ -83,6 +85,12 @@ class Report {
 
   /// The VLM's explanation of that decision. Advisory only.
   final Assessment assessment;
+
+  /// The region the server analysed, or null if it analysed the whole frame.
+  /// Everything the report carries — the overlay, the boxes, the masks — is in
+  /// this region's coordinates, so anything drawn beside them has to be cut
+  /// down to it first.
+  final Roi? roi;
 
   int get serverMs => timingMs['total'] ?? 0;
 
@@ -211,6 +219,10 @@ class Api {
       assessment: j['assessment'] is Map
           ? Assessment.fromJson(j['assessment'] as Map<String, dynamic>)
           : const Assessment(status: 'disabled'),
+      // Null on an older server, or when it analysed the whole frame. Every
+      // consumer treats null as "no crop" rather than failing, so the app keeps
+      // working against either.
+      roi: Roi.from(j['geometry']),
     );
   }
 }

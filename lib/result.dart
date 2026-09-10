@@ -18,6 +18,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'api.dart';
+import 'roi.dart';
 import 'capture.dart';
 import 'depth_view.dart';
 import 'point_cloud.dart';
@@ -64,7 +65,7 @@ class _ResultViewState extends State<ResultView> {
   Future<void> _ensureFull() async {
     if (_full != null || _buildingFull) return;
     _buildingFull = true;
-    final cloud = await buildCloud(widget.capture);
+    final cloud = await buildCloud(widget.capture, roi: widget.report.roi);
     if (mounted) setState(() => _full = cloud);
     _buildingFull = false;
   }
@@ -79,7 +80,8 @@ class _ResultViewState extends State<ResultView> {
     final mask = png == null ? null : await decodeMask(png);
     final cloud = mask == null
         ? PointCloud.empty
-        : await buildCloud(widget.capture, mask: mask);
+        : await buildCloud(widget.capture,
+            mask: mask, roi: widget.report.roi);
     if (mounted) setState(() => _part = cloud);
     _buildingPart = false;
   }
@@ -129,11 +131,15 @@ class _ResultViewState extends State<ResultView> {
   Widget _pane() {
     switch (_tab) {
       case ResultTab.rgb:
-        return _Image(bytes: widget.capture.jpeg);
+        // Cropped to the analysed square, so this tab and the Segments tab are
+        // the same picture. Showing the full frame here invites reading a
+        // defect into a part of the image the model never looked at.
+        return _Image(bytes: widget.capture.jpeg, roi: widget.report.roi,
+            capture: widget.capture);
       case ResultTab.segments:
         return _Image(bytes: widget.report.annotated);
       case ResultTab.depth:
-        return DepthView(capture: widget.capture);
+        return DepthView(capture: widget.capture, roi: widget.report.roi);
       case ResultTab.cloud:
         return _Cloud(cloud: _full);
       case ResultTab.part:
@@ -145,18 +151,43 @@ class _ResultViewState extends State<ResultView> {
 /// ARKit hands over the frame in the camera's native landscape orientation, so
 /// every 2-D view needs the same quarter turn for a portrait screen.
 class _Image extends StatelessWidget {
-  const _Image({required this.bytes});
+  const _Image({required this.bytes, this.roi, this.capture});
 
   final Uint8List bytes;
 
+  /// When both are given AND the crop is centred, the picture is cut down to
+  /// the analysed region. The server centres its crop on both axes, which is
+  /// what makes ClipRect + Align exact here rather than approximate — and
+  /// [Roi.isCentred] is checked rather than assumed, because an off-centre crop
+  /// would silently show the wrong part of the frame.
+  final Roi? roi;
+  final Capture? capture;
+
   @override
-  Widget build(BuildContext context) => InteractiveViewer(
-        maxScale: 8,
-        child: RotatedBox(
-          quarterTurns: 1,
-          child: Image.memory(bytes, fit: BoxFit.contain, gaplessPlayback: true),
+  Widget build(BuildContext context) {
+    // quarterTurns: 1 undoes ARKit's landscape camera buffer. The server sends
+    // its overlay back in that same orientation, so one rule covers both tabs.
+    Widget picture = Image.memory(bytes,
+        fit: BoxFit.contain, gaplessPlayback: true);
+
+    final r = roi;
+    final c = capture;
+    if (r != null && c != null && r.isCentred(c)) {
+      picture = ClipRect(
+        child: Align(
+          alignment: Alignment.center,
+          widthFactor: r.widthFactor(c),
+          heightFactor: r.heightFactor(c),
+          child: picture,
         ),
       );
+    }
+
+    return InteractiveViewer(
+      maxScale: 8,
+      child: RotatedBox(quarterTurns: 1, child: picture),
+    );
+  }
 }
 
 class _Cloud extends StatelessWidget {
@@ -349,14 +380,18 @@ class _Findings extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Defects first: a size readout is what they are for, and there are only
-    // ever one or two structural regions.
-    final rows = [
-      ...report.detections.where((d) => !WeldzColors.isStructural(d.label)),
-      ...report.detections.where((d) => WeldzColors.isStructural(d.label)),
-    ];
+    // Two headed groups rather than one ordered list. Structure comes first
+    // because it is the frame of reference -- if the workpiece or the seam is
+    // missing, every defect line below is suspect and the reader should see
+    // that before reading any size.
+    final structural = report.detections
+        .where((d) => WeldzColors.isStructural(d.label))
+        .toList();
+    final defects = report.detections
+        .where((d) => !WeldzColors.isStructural(d.label))
+        .toList();
 
-    if (rows.isEmpty) {
+    if (structural.isEmpty && defects.isEmpty) {
       return const Center(
         child: Text('nothing detected',
             style: TextStyle(color: WeldzColors.textFaint, fontSize: 13)),
@@ -367,16 +402,73 @@ class _Findings extends StatelessWidget {
       decoration: const BoxDecoration(
         border: Border(top: BorderSide(color: WeldzColors.border)),
       ),
-      child: ListView.separated(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        itemCount: rows.length,
-        separatorBuilder: (_, _) => const Divider(),
-        itemBuilder: (_, i) => _Row(d: rows[i]),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _GroupHead(
+            label: 'Structure',
+            count: structural.length,
+            // Said plainly: no structure means nothing to measure against.
+            empty: structural.isEmpty
+                ? 'not found — sizes below rest on nothing'
+                : null,
+          ),
+          for (var i = 0; i < structural.length; i++) ...[
+            if (i > 0) const Divider(height: 1),
+            _Row(d: structural[i]),
+          ],
+          _GroupHead(
+            label: 'Defects',
+            count: defects.length,
+            empty: defects.isEmpty ? 'none found' : null,
+          ),
+          for (var i = 0; i < defects.length; i++) ...[
+            if (i > 0) const Divider(height: 1),
+            _Row(d: defects[i]),
+          ],
+        ],
       ),
     );
   }
+}
+
+class _GroupHead extends StatelessWidget {
+  const _GroupHead({required this.label, required this.count, this.empty});
+
+  final String label;
+  final int count;
+
+  /// Set when the group has no rows, and says why that matters rather than
+  /// leaving a bare heading with nothing under it.
+  final String? empty;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        color: WeldzColors.surface,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+        child: Row(
+          children: [
+            Text(label.toUpperCase(),
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.8,
+                  color: WeldzColors.textDim,
+                )),
+            const SizedBox(width: 8),
+            if (empty == null)
+              Text('$count',
+                  style: const TextStyle(
+                      fontSize: 10.5, color: WeldzColors.textFaint))
+            else
+              Expanded(
+                child: Text(empty!,
+                    style: const TextStyle(
+                        fontSize: 10.5, color: WeldzColors.textFaint)),
+              ),
+          ],
+        ),
+      );
 }
 
 class _Row extends StatelessWidget {
