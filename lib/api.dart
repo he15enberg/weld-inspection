@@ -68,12 +68,20 @@ class Report {
     required this.annotated,
     required this.detections,
     required this.timingMs,
+    this.judgement = Judgement.empty,
+    this.assessment = const Assessment(status: 'disabled'),
   });
 
   /// The capture with masks and boxes already drawn, from the server.
   final Uint8List annotated;
   final List<Detection> detections;
   final Map<String, int> timingMs;
+
+  /// The rule table's decision. This is the answer a person acts on.
+  final Judgement judgement;
+
+  /// The VLM's explanation of that decision. Advisory only.
+  final Assessment assessment;
 
   int get serverMs => timingMs['total'] ?? 0;
 
@@ -190,6 +198,135 @@ class Api {
           .toList(),
       timingMs: (j['timing_ms'] as Map<String, dynamic>)
           .map((k, v) => MapEntry(k, (v as num).toInt())),
+      judgement: j['judgement'] is Map
+          ? Judgement.fromJson(j['judgement'] as Map<String, dynamic>)
+          : Judgement.empty,
+      assessment: j['assessment'] is Map
+          ? Assessment.fromJson(j['assessment'] as Map<String, dynamic>)
+          : const Assessment(status: 'disabled'),
     );
   }
+}
+
+/// The verdict, decided by the server's rule table. Never by the VLM.
+enum Verdict {
+  approve('Approve'),
+  rework('Rework'),
+  reject('Reject');
+
+  const Verdict(this.label);
+  final String label;
+
+  static Verdict parse(String? s) => switch (s) {
+        'reject' => Verdict.reject,
+        'rework' => Verdict.rework,
+        _ => Verdict.approve,
+      };
+}
+
+/// One rule's outcome, so the app can show what was checked — including the
+/// rules that passed. An APPROVE that lists nothing looks like a failure to
+/// look; an APPROVE that lists three clear checks looks like an inspection.
+class RuleCheck {
+  const RuleCheck({
+    required this.id,
+    required this.title,
+    required this.status,
+    required this.detail,
+    this.reason,
+  });
+
+  final String id;
+  final String title;
+
+  /// `clear`, `fired`, or `unmeasured`.
+  final String status;
+  final String detail;
+  final String? reason;
+
+  bool get fired => status == 'fired';
+  bool get unmeasured => status == 'unmeasured';
+
+  factory RuleCheck.fromJson(Map<String, dynamic> j) => RuleCheck(
+        id: j['id'] as String? ?? '',
+        title: j['title'] as String? ?? '',
+        status: j['status'] as String? ?? 'clear',
+        detail: j['detail'] as String? ?? '',
+        reason: j['reason'] as String?,
+      );
+}
+
+class Judgement {
+  const Judgement({
+    required this.verdict,
+    required this.headline,
+    required this.checks,
+    required this.noted,
+  });
+
+  final Verdict verdict;
+  final String headline;
+  final List<RuleCheck> checks;
+
+  /// Classes that were detected but are acceptable on presence alone.
+  final List<String> noted;
+
+  static const empty = Judgement(
+    verdict: Verdict.approve,
+    headline: '',
+    checks: [],
+    noted: [],
+  );
+
+  factory Judgement.fromJson(Map<String, dynamic> j) => Judgement(
+        verdict: Verdict.parse(j['verdict'] as String?),
+        headline: j['headline'] as String? ?? '',
+        checks: ((j['checks'] as List?) ?? [])
+            .map((c) => RuleCheck.fromJson(c as Map<String, dynamic>))
+            .toList(),
+        noted: ((j['noted'] as List?) ?? []).map((n) => '$n').toList(),
+      );
+}
+
+/// The VLM's read. Advisory: it explains the verdict and never changes it.
+class Assessment {
+  const Assessment({
+    required this.status,
+    this.summary = '',
+    this.concerns = const [],
+    this.imageQuality,
+    this.missedRejectable = const [],
+    this.error,
+    this.ms,
+  });
+
+  /// `ready`, `disabled`, or `failed`.
+  final String status;
+  final String summary;
+  final List<String> concerns;
+
+  /// `good`, `fair`, `poor`, or null when the model did not say.
+  final String? imageQuality;
+
+  /// Rejectable defects the VLM says it can see and the detector did not.
+  /// Surfaced as a warning; deliberately does NOT change the verdict.
+  final List<String> missedRejectable;
+
+  final String? error;
+  final int? ms;
+
+  bool get isReady => status == 'ready' && summary.isNotEmpty;
+  bool get isDisabled => status == 'disabled';
+  bool get poorImage => imageQuality == 'poor';
+
+  factory Assessment.fromJson(Map<String, dynamic> j) => Assessment(
+        status: j['status'] as String? ?? 'failed',
+        summary: (j['summary'] as String? ?? '').trim(),
+        concerns: ((j['concerns'] as List?) ?? []).map((c) => '$c').toList(),
+        imageQuality: j['image_quality'] as String?,
+        missedRejectable:
+            ((j['missed_rejectable'] as List?) ?? []).map((m) => '$m').toList(),
+        error: j['error'] as String?,
+        ms: (j['ms'] as num?)?.toInt(),
+      );
 }

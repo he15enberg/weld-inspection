@@ -23,6 +23,7 @@ import 'depth_view.dart';
 import 'point_cloud.dart';
 import 'point_cloud_view.dart';
 import 'theme.dart';
+import 'verdict_card.dart';
 
 enum ResultTab {
   rgb('RGB', Icons.photo_camera_outlined),
@@ -108,7 +109,19 @@ class _ResultViewState extends State<ResultView> {
           child: ColoredBox(color: Colors.black, child: _pane()),
         ),
         _Caption(tab: _tab, report: widget.report),
-        Expanded(flex: 4, child: _Findings(report: widget.report)),
+        Expanded(
+          flex: 4,
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 18),
+            children: [
+              VerdictBanner(judgement: widget.report.judgement),
+              RuleList(judgement: widget.report.judgement),
+              AssessmentCard(assessment: widget.report.assessment),
+              const SizedBox(height: 14),
+              _Findings(report: widget.report),
+            ],
+          ),
+        ),
       ],
     );
   }
@@ -220,9 +233,12 @@ class _Header extends StatelessWidget {
                 ],
               ),
             ),
+            // The rule table's verdict, not a guess from the detection count.
+            // The old chip said "clean" whenever no defect class fired, which
+            // is a different claim from "the rules cleared it".
             _Chip(
-              text: defects == 0 ? 'clean' : 'review',
-              color: defects == 0 ? WeldzColors.good : WeldzColors.warn,
+              text: report.judgement.verdict.label.toLowerCase(),
+              color: verdictColour(report.judgement.verdict),
             ),
           ],
         ),
@@ -352,6 +368,8 @@ class _Findings extends StatelessWidget {
         border: Border(top: BorderSide(color: WeldzColors.border)),
       ),
       child: ListView.separated(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
         padding: const EdgeInsets.symmetric(vertical: 4),
         itemCount: rows.length,
         separatorBuilder: (_, _) => const Divider(),
