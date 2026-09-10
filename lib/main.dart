@@ -39,17 +39,34 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> {
   int _index = 0;
 
+  /// Tells History to re-read the settings and the list when its tab opens.
+  /// The pages are kept alive below, so it gets no other signal.
+  final _historyTick = ValueNotifier<int>(0);
+
   // Kept alive across tab switches by IndexedStack, deliberately: switching to
   // History and back must not tear down the ARSession and pay the warm-up
   // again, and must not throw away a capture that is on screen.
-  final _pages = const [CaptureScreen(), HistoryScreen(), SettingsScreen()];
+  late final _pages = [
+    const CaptureScreen(),
+    HistoryScreen(refresh: _historyTick),
+    const SettingsScreen(),
+  ];
+
+  @override
+  void dispose() {
+    _historyTick.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) => Scaffold(
         body: IndexedStack(index: _index, children: _pages),
         bottomNavigationBar: NavigationBar(
           selectedIndex: _index,
-          onDestinationSelected: (i) => setState(() => _index = i),
+          onDestinationSelected: (i) {
+            setState(() => _index = i);
+            if (i == 1) _historyTick.value++;
+          },
           destinations: const [
             NavigationDestination(
               icon: Icon(Icons.center_focus_strong_outlined),

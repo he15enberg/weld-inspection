@@ -114,6 +114,67 @@ class Report {
   }
 }
 
+/// One row of the server's capture index.
+///
+/// Deliberately not a Report. The list endpoint answers from SQLite and never
+/// touches the stored JSON, so a hundred rows cost one query -- pulling a
+/// Report per row would mean a file read each, for a screen that shows a date
+/// and a verdict.
+class CaptureSummary {
+  const CaptureSummary({
+    required this.id,
+    required this.verdict,
+    required this.headline,
+    required this.capturedAt,
+    this.device,
+    this.defects = 0,
+    this.detections = 0,
+    this.worstLabel,
+    this.worstMm,
+  });
+
+  final String id;
+  final Verdict verdict;
+  final String headline;
+
+  /// Server clock, ISO 8601. Null when the row predates the column.
+  final DateTime? capturedAt;
+  final String? device;
+
+  final int defects;
+  final int detections;
+  final String? worstLabel;
+  final double? worstMm;
+
+  /// "porosity 4.2 mm", or null when nothing was measured.
+  String? get worst {
+    if (worstLabel == null) return null;
+    final label = worstLabel!.replaceAll('_', ' ');
+    return worstMm == null ? label : '$label ${worstMm!.toStringAsFixed(1)} mm';
+  }
+
+  factory CaptureSummary.fromJson(Map<String, dynamic> j) => CaptureSummary(
+        id: j['id'] as String? ?? '',
+        verdict: Verdict.parse(j['verdict'] as String?),
+        headline: j['headline'] as String? ?? '',
+        capturedAt: DateTime.tryParse(j['ts'] as String? ?? ''),
+        device: j['device'] as String?,
+        defects: (j['n_defects'] as num?)?.toInt() ?? 0,
+        detections: (j['n_detections'] as num?)?.toInt() ?? 0,
+        worstLabel: j['worst_label'] as String?,
+        worstMm: (j['worst_mm'] as num?)?.toDouble(),
+      );
+}
+
+class CapturePage {
+  const CapturePage({required this.total, required this.captures});
+
+  final int total;
+  final List<CaptureSummary> captures;
+
+  bool get isEmpty => captures.isEmpty;
+}
+
 class ApiError implements Exception {
   const ApiError(this.message);
   final String message;
@@ -158,6 +219,102 @@ class Api {
   /// server clamps the threshold again and snaps the crop to a size whose edges
   /// land on whole depth pixels, so what comes back in `Report.geometry` is
   /// what actually happened -- not necessarily what was asked for.
+  /// A page of the capture index, newest first.
+  Future<CapturePage> captures({
+    int limit = 30,
+    int offset = 0,
+    Verdict? verdict,
+  }) async {
+    final q = {
+      'limit': '$limit',
+      'offset': '$offset',
+      if (verdict != null) 'verdict': verdict.name,
+    };
+    final j = await _getJson(_url('/captures').replace(queryParameters: q));
+    return CapturePage(
+      total: (j['total'] as num?)?.toInt() ?? 0,
+      captures: ((j['captures'] as List?) ?? [])
+          .map((c) => CaptureSummary.fromJson(c as Map<String, dynamic>))
+          .toList(),
+    );
+  }
+
+  /// One stored capture, rebuilt into the same Report a live measure returns.
+  ///
+  /// Two fetches, not one: `save()` strips the base64 overlay out of
+  /// result.json before writing it -- keeping it would roughly double the
+  /// record on disk for a copy of a file already sitting beside it -- so the
+  /// picture comes from the file endpoint.
+  ///
+  /// The overlay is fetched second and tolerated if it fails. A capture whose
+  /// image is missing still has a verdict, rules and measurements worth
+  /// reading, and losing all of that to a 404 on a JPEG would be the wrong
+  /// trade.
+  Future<Report> capture(String id) async {
+    final j = await _getJson(_url('/captures/${Uri.encodeComponent(id)}'));
+
+    Uint8List overlay = Uint8List(0);
+    try {
+      overlay = await file(id, 'overlay.jpg');
+    } on ApiError {
+      // handled above: the record is still worth showing
+    }
+
+    return Report(
+      annotated: overlay,
+      detections: ((j['detections'] as List?) ?? [])
+          .map((d) => Detection.fromJson(d as Map<String, dynamic>))
+          .toList(),
+      timingMs: ((j['timing_ms'] as Map<String, dynamic>?) ?? {})
+          .map((k, v) => MapEntry(k, (v as num).toInt())),
+      judgement: j['judgement'] is Map
+          ? Judgement.fromJson(j['judgement'] as Map<String, dynamic>)
+          : Judgement.empty,
+      assessment: j['assessment'] is Map
+          ? Assessment.fromJson(j['assessment'] as Map<String, dynamic>)
+          : const Assessment(status: 'disabled'),
+      roi: Roi.from(j['geometry']),
+    );
+  }
+
+  /// One stored file. `name` is checked against a whitelist on the server, so
+  /// a bad value comes back 404 rather than reaching the filesystem.
+  Future<Uint8List> file(String id, String name) async {
+    final url = _url('/captures/${Uri.encodeComponent(id)}/file/$name');
+    late http.Response res;
+    try {
+      res = await http.get(url, headers: _headers).timeout(timeout);
+    } catch (e) {
+      throw ApiError('could not reach the server: $e');
+    }
+    if (res.statusCode != 200) {
+      throw ApiError('server said ${res.statusCode} for $name');
+    }
+    return res.bodyBytes;
+  }
+
+  Future<Map<String, dynamic>> _getJson(Uri url) async {
+    late http.Response res;
+    try {
+      res = await http.get(url, headers: _headers).timeout(timeout);
+    } catch (e) {
+      throw ApiError('could not reach the server: $e');
+    }
+    if (res.statusCode == 401) {
+      throw const ApiError('server rejected the token - check it in settings');
+    }
+    if (res.statusCode != 200) {
+      String detail = res.body;
+      try {
+        detail = (jsonDecode(res.body) as Map<String, dynamic>)['detail']
+                ?.toString() ??
+            res.body;
+      } catch (_) {}
+      throw ApiError('server said ${res.statusCode}: $detail');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   Future<Report> measure(Capture c, {Settings? settings}) async {
     final req = http.MultipartRequest('POST', _url('/measure'))
       ..headers.addAll(_headers)
