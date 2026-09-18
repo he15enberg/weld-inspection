@@ -242,6 +242,114 @@ async function loadCaptures() {
 
 /* --------------------------------------------------------------- detail */
 
+/* workpiece and weld_seam: found on every frame, frame-sized, and not what
+   anyone is looking for. Drawn first and thinner so defects land on top. */
+const STRUCTURAL = new Set(['workpiece', 'weld_seam']);
+
+/* The annotation layer for the Segments panel.
+ *
+ * The server bakes boxes and captions into overlay.jpg at sizes tuned for a
+ * phone held at arm's length: a 2px stroke on a 1380px image. Shown in a 380px
+ * card that is a 0.28 scale, so the stroke lands at half a pixel and the
+ * captions at four. The picture is right and unreadable.
+ *
+ * So the masks come from the baked image -- they are regions, they scale fine
+ * -- and the boxes and labels are drawn again on top, in a layer that does not
+ * scale. `vector-effect: non-scaling-stroke` keeps a stroke at its CSS width
+ * whatever the viewBox does, and the labels are HTML, so both stay legible at
+ * any card size.
+ *
+ * bbox_px and overlay.jpg are in the same space (the turned, cropped frame the
+ * model works in), which is what makes drawing one on the other exact rather
+ * than approximately aligned. `image` is that space's size.
+ */
+function overlayLayer(rec) {
+  const dets = rec.detections || [];
+  const W = rec.image?.width, H = rec.image?.height;
+  if (!W || !H || !dets.length) return '';
+
+  /* Structural regions first so defect boxes and their labels land on top --
+     the workpiece box is frame-sized and would otherwise cover everything. */
+  const order = [...dets].sort((a, b) => {
+    const s = (d) => (STRUCTURAL.has(d.label) ? 0 : 1);
+    return s(a) - s(b) || (b.confidence || 0) - (a.confidence || 0);
+  });
+
+  const boxes = order.map((d) => {
+    const [x0, y0, x1, y1] = d.bbox_px || [0, 0, 0, 0];
+    const colour = CLASS_COLOUR[d.label] || '#888';
+    const structural = STRUCTURAL.has(d.label);
+    return `<rect x="${x0}" y="${y0}" width="${Math.max(x1 - x0, 1)}"`
+      + ` height="${Math.max(y1 - y0, 1)}" fill="none" stroke="${colour}"`
+      + ` stroke-width="${structural ? 1.5 : 2.75}"`
+      + ` vector-effect="non-scaling-stroke" rx="2"></rect>`;
+  }).join('');
+
+  /* Every box gets drawn; not every box gets a caption.
+   *
+   * Thirty porosity pits along one bead is a normal result, and thirty
+   * captions stacked on a 330px card is an unreadable pile that hides the
+   * weld underneath. So captions are placed greedily -- structural first,
+   * then defects by confidence -- and one that would land on top of a caption
+   * already placed is dropped. The box stays, the table below the picture
+   * still lists every detection, and the note says how many were left off.
+   *
+   * The overlap test works in a rough approximation of DISPLAY space: label
+   * sizes are fixed CSS pixels while positions are percentages, so the card's
+   * own width is what decides whether two captions collide. CARD_PX is that
+   * width to the nearest guess; being a little wrong only changes how
+   * aggressively captions thin out, never whether a box is drawn.
+   */
+  const CARD_PX = 330;
+  const placed = [];
+  let hidden = 0;
+
+  const labels = order.map((d) => {
+    const [x0, y0, x1, y1] = d.bbox_px || [0, 0, 0, 0];
+    const colour = CLASS_COLOUR[d.label] || '#888';
+    const size = (d.width_mm != null && d.height_mm != null)
+      ? ` · ${d.width_mm.toFixed(1)}×${d.height_mm.toFixed(1)} mm` : '';
+    const text = `${d.label.replace(/_/g, ' ')} `
+      + `${(+d.confidence).toFixed(2)}${size}`;
+
+    /* Above the box, unless it starts near the top -- a caption clipped by
+       the frame edge is worse than one overlapping its own region. */
+    const above = y0 / H > 0.06;
+    const left = (x0 / W) * 100;
+    const top = (y0 / H) * 100;
+
+    // approximate footprint, in percent of the card
+    const w = ((text.length * 5.4 + 12) / CARD_PX) * 100;
+    const h = (17 / CARD_PX) * 100;
+    const t = above ? top - h : top;
+    const rect = [left, t, left + w, t + h];
+
+    const clashes = placed.some((q) =>
+      rect[0] < q[2] && rect[2] > q[0] && rect[1] < q[3] && rect[3] > q[1]);
+    if (clashes) {
+      hidden += 1;
+      return '';
+    }
+    placed.push(rect);
+
+    return `<span class="ann${above ? '' : ' ann-below'}"`
+      + ` style="left:${left}%;top:${top}%;background:${colour}">`
+      + `${esc(text)}</span>`;
+  }).join('');
+
+  const note = hidden
+    ? `<p class="shot-note">${hidden} more label${hidden === 1 ? '' : 's'} `
+      + `hidden where they would have overlapped. Every detection is in the `
+      + `table below.</p>`
+    : '';
+
+  return `<div class="ann-stack" style="aspect-ratio:${W}/${H}">
+      <img src="${fileUrl(rec.id, 'overlay.jpg')}" alt="">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${boxes}</svg>
+      <div class="ann-labels">${labels}</div>
+    </div>${note}`;
+}
+
 async function openCapture(id) {
   const sheet = document.getElementById('sheet');
   const body = document.getElementById('sheetBody');
@@ -265,9 +373,14 @@ async function openCapture(id) {
   const clear = (j.checks || []).filter((c) => c.status === 'clear');
 
   const dets = (rec.detections || []).slice().sort((x, y) => {
-    const s = (d) => (['workpiece', 'weld_seam'].includes(d.label) ? 1 : 0);
+    const s = (d) => (STRUCTURAL.has(d.label) ? 1 : 0);
     return s(x) - s(y);
   });
+
+  /* Built once: it walks every detection and places every caption, and the
+     ternary that chose between it and a plain <img> was running it twice. */
+  const segments = overlayLayer({ ...rec, id })
+    || `<div class="frame"><img src="${fileUrl(id, 'overlay.jpg')}" alt=""></div>`;
 
   body.innerHTML = `
     <div class="banner" style="border-color:${colour}73;background:${colour}1a">
@@ -341,9 +454,15 @@ async function openCapture(id) {
 
     <div class="shots">
       <div class="shot"><h3>Captured frame</h3>
-        <div class="frame"><img src="${fileUrl(id, 'color.jpg')}" alt=""></div></div>
-      <div class="shot"><h3>Segments</h3>
-        <div class="frame"><img src="${fileUrl(id, 'overlay.jpg')}" alt=""></div></div>
+        <div class="frame"><img src="${fileUrl(id, 'color.jpg')}" alt=""></div>
+        <p class="shot-note">As the camera recorded it. The analysed region is
+          turned and cropped out of this, which is why it sits the other way
+          up.</p></div>
+      <div class="shot"><h3>Segments
+          <span class="shot-tools">
+            <button class="chip" id="annToggle" data-on="1">Labels</button>
+          </span></h3>
+        ${segments}</div>
       <div class="shot"><h3>LiDAR depth</h3>
         <div class="frame"><canvas id="depthCanvas"
           style="width:100%;image-rendering:pixelated"></canvas></div>
@@ -417,6 +536,20 @@ async function openCapture(id) {
     }
   } catch {
     document.getElementById('depthLegend').textContent = 'Depth unavailable.';
+  }
+
+  /* Labels on by default -- they are what the panel is for. The toggle takes
+     them off for the times you want to look at the weld itself. */
+  const annBtn = document.getElementById('annToggle');
+  const annStack = document.querySelector('.ann-stack');
+  if (annBtn && annStack) {
+    annBtn.addEventListener('click', () => {
+      const on = annBtn.dataset.on === '1';
+      annStack.classList.toggle('labels-off', on);
+      if (on) delete annBtn.dataset.on; else annBtn.dataset.on = '1';
+    });
+  } else if (annBtn) {
+    annBtn.disabled = true;
   }
 
   /* The point cloud, from the same depth buffer. Mounted last and guarded --
