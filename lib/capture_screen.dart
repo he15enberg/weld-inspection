@@ -434,11 +434,15 @@ class _Tag extends StatelessWidget {
   }
 }
 
-/// The two things that decide whether a capture is worth taking.
+/// What actually decides whether a capture is worth taking: how much of the
+/// frame the weld fills.
 ///
-/// Both were learned the expensive way: the model has only ever seen welds
-/// lying across the frame and filling it, and a capture that gets either wrong
-/// is not a marginal result, it is a wasted one.
+/// It says nothing about how to hold the phone. The server turns the frame
+/// before inference and turns its own outputs back before replying, so
+/// orientation is handled and the operator should not be managing it. Filling
+/// the frame is the part only they can do -- the model was trained on welds
+/// that fill it, and a part small in frame is a wasted capture, not a marginal
+/// one.
 class _Hint extends StatelessWidget {
   const _Hint({required this.cropped});
 
@@ -447,8 +451,8 @@ class _Hint extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Text(
         cropped
-            ? 'Hold landscape  ·  fill the square with the weld'
-            : 'Hold landscape  ·  fill the frame with the weld',
+            ? 'Fill the square with the weld'
+            : 'Fill the frame with the weld',
         textAlign: TextAlign.center,
         style: TextStyle(
           fontSize: 12,

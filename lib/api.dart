@@ -182,6 +182,23 @@ class ApiError implements Exception {
   String toString() => message;
 }
 
+/// A stored capture, rebuilt into exactly what a live measure produced.
+///
+/// Both halves, because the result screen needs both: the Report carries the
+/// verdict, the boxes and the masks; the Capture carries the pixels and the
+/// depth that the depth view and the point clouds unproject. With both, a
+/// record from last week renders through the same ResultView as one taken two
+/// seconds ago, and there is no second implementation to drift.
+class StoredCapture {
+  const StoredCapture({required this.report, this.capture});
+
+  final Report report;
+
+  /// Null when the stored files or the intrinsics are incomplete. The verdict,
+  /// the rules and the overlay still render; only the depth-derived tabs go.
+  final Capture? capture;
+}
+
 class Api {
   Api(this.baseUrl, {this.token = ''});
 
@@ -250,7 +267,7 @@ class Api {
   /// image is missing still has a verdict, rules and measurements worth
   /// reading, and losing all of that to a 404 on a JPEG would be the wrong
   /// trade.
-  Future<Report> capture(String id) async {
+  Future<StoredCapture> capture(String id) async {
     final j = await _getJson(_url('/captures/${Uri.encodeComponent(id)}'));
 
     Uint8List overlay = Uint8List(0);
@@ -260,7 +277,7 @@ class Api {
       // handled above: the record is still worth showing
     }
 
-    return Report(
+    final report = Report(
       annotated: overlay,
       detections: ((j['detections'] as List?) ?? [])
           .map((d) => Detection.fromJson(d as Map<String, dynamic>))
@@ -275,6 +292,54 @@ class Api {
           : const Assessment(status: 'disabled'),
       roi: Roi.from(j['geometry']),
     );
+
+    return StoredCapture(report: report, capture: await _pixels(id, j['meta']));
+  }
+
+  /// The photo, the depth map and the confidence map, rebuilt into the Capture
+  /// the phone originally held.
+  ///
+  /// Fetched with the record rather than on first tap: the point clouds cannot
+  /// be built without depth, and a tab that spins the first time it is opened
+  /// reads as broken. About half a megabyte for a record.
+  ///
+  /// Returns null rather than a partial Capture. Every intrinsic is needed to
+  /// unproject a point, and a cloud built from a missing principal point looks
+  /// plausible and is wrong -- which is worse than a tab that says it has
+  /// nothing to show.
+  Future<Capture?> _pixels(String id, Object? meta) async {
+    if (meta is! Map) return null;
+
+    double? real(String k) => (meta[k] as num?)?.toDouble();
+    int? whole(String k) => (meta[k] as num?)?.toInt();
+
+    final fx = real('fx'), fy = real('fy');
+    final cx = real('cx'), cy = real('cy');
+    final dw = whole('depth_width'), dh = whole('depth_height');
+    final iw = whole('image_width'), ih = whole('image_height');
+    if (fx == null || fy == null || cx == null || cy == null ||
+        dw == null || dh == null || iw == null || ih == null) {
+      return null;
+    }
+
+    try {
+      return Capture(
+        jpeg: await file(id, 'color.jpg'),
+        depth: await file(id, 'depth.u16'),
+        confidence: await file(id, 'confidence.u8'),
+        depthWidth: dw,
+        depthHeight: dh,
+        imageWidth: iw,
+        imageHeight: ih,
+        fx: fx,
+        fy: fy,
+        cx: cx,
+        cy: cy,
+      );
+    } on ApiError {
+      // A missing file costs the depth tabs, not the record.
+      return null;
+    }
   }
 
   /// One stored file. `name` is checked against a whitelist on the server, so

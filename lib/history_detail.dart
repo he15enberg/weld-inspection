@@ -1,22 +1,25 @@
 // One stored capture, reopened.
 //
-// Reuses VerdictBanner / RuleList / UtilisationList / AssessmentCard rather
-// than restating them, so a capture reads the same whether it is two seconds
-// old or two weeks. A history screen that summarises differently from the
-// result screen quietly becomes a second opinion.
+// This screen is deliberately thin. It fetches the record and the three stored
+// files, rebuilds the Capture the phone originally held, and hands both to
+// ResultView -- the same widget the live path uses. So a record from last week
+// has the same five tabs, the same verdict card and the same point clouds as a
+// capture taken two seconds ago, because it IS the same code.
 //
-// What it does NOT do is rebuild the point cloud. The stored depth map is the
-// full frame as the phone sent it, while the masks in the record are in the
-// analysed region's smaller grid; lining those up again means re-applying the
-// crop from `geometry`, and a cloud that is subtly misaligned is worse than no
-// cloud. The photograph, the overlay, the verdict and every measurement are
-// all here -- which is what reviewing a decision actually needs.
-
-import 'dart:typed_data';
+// The alternative was a second, smaller result screen. That drifts: the live
+// view gains a field, the history view does not, and the two quietly start
+// telling different stories about the same weld.
+//
+// The reduced view below is the fallback, not the design. It appears only when
+// the pixels cannot be rebuilt -- a file missing from the archive, or a record
+// written before the intrinsics were stored -- and it says which tabs are gone
+// and why rather than silently showing fewer.
 
 import 'package:flutter/material.dart';
 
 import 'api.dart';
+import 'capture.dart';
+import 'result.dart';
 import 'settings.dart';
 import 'theme.dart';
 import 'verdict_card.dart';
@@ -35,14 +38,10 @@ class HistoryDetail extends StatefulWidget {
   State<HistoryDetail> createState() => _HistoryDetailState();
 }
 
-enum _Pane { overlay, photo }
-
 class _HistoryDetailState extends State<HistoryDetail> {
-  Report? _report;
-  Uint8ListHolder? _photo;
+  StoredCapture? _stored;
   String? _error;
   bool _loading = true;
-  _Pane _pane = _Pane.overlay;
 
   @override
   void initState() {
@@ -55,12 +54,12 @@ class _HistoryDetailState extends State<HistoryDetail> {
       _loading = true;
       _error = null;
     });
-    final api = Api(widget.settings.url, token: widget.settings.token);
     try {
-      final report = await api.capture(widget.summary.id);
+      final stored = await Api(widget.settings.url, token: widget.settings.token)
+          .capture(widget.summary.id);
       if (!mounted) return;
       setState(() {
-        _report = report;
+        _stored = stored;
         _loading = false;
       });
     } catch (e) {
@@ -72,309 +71,131 @@ class _HistoryDetailState extends State<HistoryDetail> {
     }
   }
 
-  /// Fetched only when the photo pane is opened. It is the largest file in the
-  /// record and most visits never look at it.
-  Future<void> _ensurePhoto() async {
-    if (_photo != null) return;
-    try {
-      final bytes = await Api(widget.settings.url, token: widget.settings.token)
-          .file(widget.summary.id, 'color.jpg');
-      if (!mounted) return;
-      setState(() => _photo = Uint8ListHolder(bytes));
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _photo = Uint8ListHolder(null));
-    }
-  }
+  void _close() => Navigator.of(context).maybePop();
 
   @override
   Widget build(BuildContext context) {
-    final r = _report;
+    final stored = _stored;
+    final capture = stored?.capture;
+
     return Scaffold(
       backgroundColor: WeldzColors.bg,
-      appBar: AppBar(
-        backgroundColor: WeldzColors.bg,
-        elevation: 0,
-        title: Text(
-          when(widget.summary.capturedAt),
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-        ),
-        actions: [
-          IconButton(
-            onPressed: _loading ? null : _load,
-            icon: const Icon(Icons.refresh, size: 19),
-            tooltip: 'Reload',
-          ),
-        ],
-      ),
-      body: SafeArea(
-        top: false,
-        child: _loading
-            ? const Center(
-                child: SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: WeldzColors.blue),
-                ),
-              )
-            : _error != null
-                ? _Failed(message: _error!, onRetry: _load)
-                : ListView(
-                    padding: const EdgeInsets.only(bottom: 26),
-                    children: [
-                      _Viewer(
-                        pane: _pane,
-                        report: r!,
-                        photo: _photo,
-                        onSelect: (p) {
-                          setState(() => _pane = p);
-                          if (p == _Pane.photo) _ensurePhoto();
-                        },
-                      ),
-                      if (r.assessment.blocks)
-                        CaptureGate(assessment: r.assessment)
-                      else ...[
-                        VerdictBanner(judgement: r.judgement),
-                        RuleList(judgement: r.judgement),
-                        UtilisationList(judgement: r.judgement),
-                      ],
-                      AssessmentCard(assessment: r.assessment),
-                      const SizedBox(height: 12),
-                      _Detections(report: r),
-                      _Provenance(
-                          summary: widget.summary, judgement: r.judgement),
-                    ],
-                  ),
-      ),
-    );
-  }
-}
-
-/// A tiny box so "not fetched yet" and "fetched and failed" are different
-/// states. A bare nullable byte list cannot tell them apart, and the screen
-/// would retry the download on every rebuild.
-class Uint8ListHolder {
-  const Uint8ListHolder(this.bytes);
-  final Uint8List? bytes;
-  bool get ok => bytes != null;
-}
-
-class _Viewer extends StatelessWidget {
-  const _Viewer({
-    required this.pane,
-    required this.report,
-    required this.photo,
-    required this.onSelect,
-  });
-
-  final _Pane pane;
-  final Report report;
-  final Uint8ListHolder? photo;
-  final ValueChanged<_Pane> onSelect;
-
-  @override
-  Widget build(BuildContext context) => Column(
-        children: [
-          Container(
-            height: 300,
-            color: Colors.black,
-            width: double.infinity,
-            child: _body(),
-          ),
-          Container(
-            height: 42,
-            decoration: const BoxDecoration(
-              color: WeldzColors.bg,
-              border:
-                  Border(bottom: BorderSide(color: WeldzColors.border)),
-            ),
-            child: Row(
-              children: [
-                _Tab(
-                  label: 'Result',
-                  active: pane == _Pane.overlay,
-                  onTap: () => onSelect(_Pane.overlay),
-                ),
-                _Tab(
-                  label: 'Photo',
-                  active: pane == _Pane.photo,
-                  onTap: () => onSelect(_Pane.photo),
+      // ResultView brings its own header with a close control, so the app bar
+      // only appears on the paths that do not have one.
+      appBar: (stored != null && capture != null)
+          ? null
+          : AppBar(
+              backgroundColor: WeldzColors.bg,
+              elevation: 0,
+              title: Text(
+                when(widget.summary.capturedAt),
+                style:
+                    const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+              actions: [
+                IconButton(
+                  onPressed: _loading ? null : _load,
+                  icon: const Icon(Icons.refresh, size: 19),
+                  tooltip: 'Reload',
                 ),
               ],
             ),
-          ),
-        ],
-      );
+      body: SafeArea(
+        top: capture == null,
+        child: _body(stored, capture),
+      ),
+    );
+  }
 
-  Widget _body() {
-    if (pane == _Pane.overlay) {
-      if (report.annotated.isEmpty) {
-        return const _Missing(text: 'The overlay image is not on the server.');
-      }
-      return InteractiveViewer(
-        maxScale: 6,
-        child: Image.memory(report.annotated, fit: BoxFit.contain),
-      );
-    }
-    final p = photo;
-    if (p == null) {
+  Widget _body(StoredCapture? stored, Capture? capture) {
+    if (_loading) {
       return const Center(
         child: SizedBox(
-          width: 20,
-          height: 20,
-          child: CircularProgressIndicator(
-              strokeWidth: 2, color: WeldzColors.blue),
+          width: 22,
+          height: 22,
+          child:
+              CircularProgressIndicator(strokeWidth: 2, color: WeldzColors.blue),
         ),
       );
     }
-    if (!p.ok) {
-      return const _Missing(text: 'The photograph is not on the server.');
+    if (_error != null) {
+      return _Failed(message: _error!, onRetry: _load);
     }
-    return InteractiveViewer(
-      maxScale: 6,
-      child: Image.memory(p.bytes!, fit: BoxFit.contain),
-    );
+    if (stored == null) {
+      return _Failed(message: 'Nothing came back.', onRetry: _load);
+    }
+
+    // The whole point: the live result screen, on a stored capture.
+    if (capture != null) {
+      return ResultView(
+        capture: capture,
+        report: stored.report,
+        onClose: _close,
+      );
+    }
+    return _Reduced(report: stored.report, summary: widget.summary);
   }
 }
 
-class _Missing extends StatelessWidget {
-  const _Missing({required this.text});
-  final String text;
-
-  @override
-  Widget build(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 30),
-          child: Text(
-            text,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 12, color: WeldzColors.textFaint),
-          ),
-        ),
-      );
-}
-
-class _Tab extends StatelessWidget {
-  const _Tab({required this.label, required this.active, required this.onTap});
-
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => Expanded(
-        child: InkWell(
-          onTap: onTap,
-          child: Container(
-            decoration: BoxDecoration(
-              border: Border(
-                bottom: BorderSide(
-                  color: active ? WeldzColors.blue : Colors.transparent,
-                  width: 2,
-                ),
-              ),
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                color: active ? WeldzColors.text : WeldzColors.textDim,
-              ),
-            ),
-          ),
-        ),
-      );
-}
-
-/// Structural regions last: they are found on every frame and are not what
-/// anyone opened the record to read.
-class _Detections extends StatelessWidget {
-  const _Detections({required this.report});
+/// Shown when the pixels could not be rebuilt. Everything that does not need
+/// depth is still here.
+class _Reduced extends StatelessWidget {
+  const _Reduced({required this.report, required this.summary});
 
   final Report report;
+  final CaptureSummary summary;
 
   @override
-  Widget build(BuildContext context) {
-    final rows = [
-      ...report.detections
-          .where((d) => !WeldzColors.isStructural(d.label)),
-      ...report.detections.where((d) => WeldzColors.isStructural(d.label)),
-    ];
-    if (rows.isEmpty) return const SizedBox.shrink();
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(14, 0, 14, 0),
-      decoration: BoxDecoration(
-        color: WeldzColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: WeldzColors.border),
-      ),
-      child: Column(
+  Widget build(BuildContext context) => ListView(
+        padding: const EdgeInsets.only(bottom: 26),
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
-            child: Row(
+          if (report.annotated.isNotEmpty)
+            Container(
+              height: 300,
+              width: double.infinity,
+              color: Colors.black,
+              child: InteractiveViewer(
+                maxScale: 6,
+                child: Image.memory(report.annotated, fit: BoxFit.contain),
+              ),
+            ),
+          Container(
+            margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+            padding: const EdgeInsets.all(13),
+            decoration: BoxDecoration(
+              color: WeldzColors.warn.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(12),
+              border:
+                  Border.all(color: WeldzColors.warn.withValues(alpha: 0.35)),
+            ),
+            child: const Row(
               children: [
-                const Text('DETECTIONS',
+                Icon(Icons.layers_clear_outlined,
+                    size: 16, color: WeldzColors.warn),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'The depth map for this capture is not on the server, so '
+                    'the depth and point-cloud tabs are unavailable. The '
+                    'verdict and every measurement are unaffected.',
                     style: TextStyle(
-                        fontSize: 10.5,
-                        letterSpacing: 0.8,
-                        fontWeight: FontWeight.w600,
-                        color: WeldzColors.textDim)),
-                const Spacer(),
-                Text('${rows.length}',
-                    style: const TextStyle(
-                        fontSize: 10.5, color: WeldzColors.textFaint)),
+                        fontSize: 11, height: 1.35, color: WeldzColors.warn),
+                  ),
+                ),
               ],
             ),
           ),
-          for (final d in rows) _DetectionRow(d: d),
-          const SizedBox(height: 6),
+          if (report.assessment.blocks)
+            CaptureGate(assessment: report.assessment)
+          else ...[
+            VerdictBanner(judgement: report.judgement),
+            RuleList(judgement: report.judgement),
+            UtilisationList(judgement: report.judgement),
+          ],
+          AssessmentCard(assessment: report.assessment),
+          _Provenance(summary: summary, judgement: report.judgement),
         ],
-      ),
-    );
-  }
-}
-
-class _DetectionRow extends StatelessWidget {
-  const _DetectionRow({required this.d});
-
-  final Detection d;
-
-  @override
-  Widget build(BuildContext context) {
-    final colour = WeldzColors.forClass(d.label);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-      child: Row(
-        children: [
-          Container(width: 4, height: 26, color: colour),
-          const SizedBox(width: 11),
-          Expanded(
-            child: Text(d.label.replaceAll('_', ' '),
-                style: const TextStyle(fontSize: 12.5)),
-          ),
-          Text(
-            d.hasSize
-                ? '${d.widthMm!.toStringAsFixed(1)} x '
-                    '${d.heightMm!.toStringAsFixed(1)} mm'
-                : 'not sized',
-            style: TextStyle(
-              fontSize: 11,
-              color: d.hasSize ? WeldzColors.textDim : WeldzColors.textFaint,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Text('${(d.confidence * 100).round()}%',
-              style: const TextStyle(
-                  fontSize: 11, color: WeldzColors.textFaint)),
-        ],
-      ),
-    );
-  }
+      );
 }
 
 /// Which rule set judged this, and on what. A verdict without it cannot be
@@ -394,7 +215,7 @@ class _Provenance extends StatelessWidget {
         'rule set v${judgement.rulesetVersion}',
     ];
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 14, 18, 0),
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 0),
       child: Text(
         bits.join('  ·  '),
         style: const TextStyle(

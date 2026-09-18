@@ -146,7 +146,9 @@ class _ResultViewState extends State<ResultView> {
         return _Image(bytes: widget.capture.jpeg, roi: widget.report.roi,
             capture: widget.capture);
       case ResultTab.segments:
-        return _Image(bytes: widget.report.annotated);
+        // Already cropped and already the right way up -- the server draws it
+        // in that space and no longer turns it back.
+        return _Image(bytes: widget.report.annotated, upright: true);
       case ResultTab.depth:
         return DepthView(capture: widget.capture, roi: widget.report.roi);
       case ResultTab.cloud:
@@ -160,9 +162,24 @@ class _ResultViewState extends State<ResultView> {
 /// ARKit hands over the frame in the camera's native landscape orientation, so
 /// every 2-D view needs the same quarter turn for a portrait screen.
 class _Image extends StatelessWidget {
-  const _Image({required this.bytes, this.roi, this.capture});
+  const _Image({
+    required this.bytes,
+    this.roi,
+    this.capture,
+    this.upright = false,
+  });
 
   final Uint8List bytes;
+
+  /// True when the bytes are ALREADY the way up they should be shown.
+  ///
+  /// The server's overlay is: it is drawn in the turned, cropped space the
+  /// model works in, which is also the space the operator was looking at
+  /// through the preview, and it is sent exactly like that. The phone's own
+  /// JPEG is not -- `frame.capturedImage` is the raw sensor buffer, a quarter
+  /// turn away, whatever the interface orientation. So the two tabs need
+  /// different treatment and one blanket rotation cannot serve both.
+  final bool upright;
 
   /// When both are given AND the crop is centred, the picture is cut down to
   /// the analysed region. The server centres its crop on both axes, which is
@@ -174,8 +191,6 @@ class _Image extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // quarterTurns: 1 undoes ARKit's landscape camera buffer. The server sends
-    // its overlay back in that same orientation, so one rule covers both tabs.
     Widget picture = Image.memory(bytes,
         fit: BoxFit.contain, gaplessPlayback: true);
 
@@ -192,9 +207,14 @@ class _Image extends StatelessWidget {
       );
     }
 
+    // Crop first, then turn: the crop rectangle is quoted in the captured
+    // frame's own coordinates, so it has to be applied while the picture is
+    // still in them.
     return InteractiveViewer(
       maxScale: 8,
-      child: RotatedBox(quarterTurns: 1, child: picture),
+      child: upright
+          ? picture
+          : RotatedBox(quarterTurns: 1, child: picture),
     );
   }
 }
