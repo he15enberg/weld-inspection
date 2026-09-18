@@ -200,10 +200,14 @@ async def measure_endpoint(
         }
         if masks is not None:
             row.update(mm.measure(masks[i], box, depth_m, conf, fx, img.width))
-            # Turned back before it is shipped: the phone holds the untouched
-            # capture, so a mask in model space would be indexed against a grid
-            # of a different size and shape. That is what silently emptied the
-            # workpiece cloud.
+            # The one output still turned back, and deliberately so.
+            #
+            # The overlay is a picture and goes out in model space. A mask is
+            # not looked at -- it is INDEXED, against the depth map the phone
+            # already holds, which is the raw ARKit buffer and cannot be turned
+            # after the fact. So the mask meets the depth where the depth lives.
+            # Getting this backwards is what silently emptied the workpiece
+            # cloud once already.
             row["mask_png"] = mask_png(
                 frame.unrotate_mask(masks[i], geo), dw, dh)
         rows.append(row)
@@ -224,25 +228,31 @@ async def measure_endpoint(
     rule_config = ruleset.load()
     judgement = scoring.evaluate(rows, seam, rule_config)
 
-    # Drawn in model space -- rows still carry model-space boxes at this point,
-    # which is what overlay.draw() needs -- then turned back for the client.
-    annotated = frame.unrotate_image(overlay.draw(img, rows, masks), geo)
+    # Drawn in model space and LEFT there.
+    #
+    # It used to be turned back to the camera buffer's orientation on the way
+    # out, on the reasoning that the phone holds the untouched capture. That
+    # reasoning was wrong about the one thing that matters: ARSCNView applies
+    # the interface-orientation transform to the live preview, while
+    # `frame.capturedImage` does not -- so the buffer is a quarter turn away
+    # from what the operator was actually looking at, and turning the overlay
+    # back put it in an orientation nobody uses.
+    #
+    # It also turned the captions with it. They are drawn while the frame is
+    # horizontal, so rotating the finished picture leaves every label lying on
+    # its side. That is the tell, and it reached three places at once: the JPEG
+    # on disk, the dashboard that serves it, and the VLM -- whose entire job is
+    # to look at this image and describe it.
+    annotated = overlay.draw(img, rows, masks)
     buf = io.BytesIO()
     annotated.save(buf, "JPEG", quality=88)
     overlay_jpeg = buf.getvalue()
 
-    # Now the boxes follow the picture. Everything the client receives is in
-    # ONE space from here on: cropped, and the way up the capture arrived.
-    turn = (geo["rotate"] // 90) % 4
-    if turn:
-        for row in rows:
-            box = frame.unmap_box(row["bbox_px"], turn,
-                                  annotated.width, annotated.height)
-            row["bbox_px"] = box
-            row["bbox"] = [round(box[0] / annotated.width, 4),
-                           round(box[1] / annotated.height, 4),
-                           round(box[2] / annotated.width, 4),
-                           round(box[3] / annotated.height, 4)]
+    # The boxes stay in model space too, which is now the space the overlay is
+    # in -- so a box and the picture it was drawn on describe the same pixels.
+    # Nothing currently renders them from coordinates (both the app and the
+    # dashboard show the finished overlay), so turning them back was ceremony
+    # that could only ever drift out of step with the image.
     t4 = time.perf_counter()
 
     # The VLM sees the overlay, not the raw frame: that is what lets it comment
