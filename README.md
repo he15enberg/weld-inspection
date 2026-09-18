@@ -10,8 +10,6 @@ a stored record.
 
 **One phone. One verdict. A record every time.**
 
-Team **Wunderbar** — Aiswariya · Dhiraj · Kanishka · Santhosh
-
 ---
 
 ## The loop
@@ -26,7 +24,7 @@ Team **Wunderbar** — Aiswariya · Dhiraj · Kanishka · Santhosh
 
 **The rules engine always decides.** An optional vision-language model can explain
 the verdict and flag a frame as unusable, but it never overrules it. That split is
-the whole design: a demo where an LLM decides pass/fail is a demo you cannot defend
+the whole design: a system where an LLM decides pass/fail is one you cannot defend
 when it changes its mind on the same photo.
 
 ---
@@ -60,8 +58,8 @@ Three parts: the phone captures, the server decides, the browser reviews.
 
 **One server on one port serves both the API and the dashboard** — there is nothing
 to build and nothing to deploy but a laptop. No node, no bundler, no CORS, no second
-origin. For something that has to survive a demo over a tunnel, that matters more
-than a component framework.
+origin. For something that has to run from a laptop over a tunnel, that matters
+more than a component framework.
 
 The VLM runs in its **own process** so that when the GPU falls over under it, every
 capture still produces a full verdict and only the advisory paragraph goes missing.
@@ -239,7 +237,7 @@ cannot support, so it is not claimed.
 ## What this is honest about
 
 - The dataset is **102 images**. The model generalises to our parts and our
-  lighting; it is a demonstration, not a certified instrument.
+  lighting; it is not a certified instrument and does not claim to be one.
 - The rules are **ISO-*like*, not ISO**. Five editable limits chosen to be legible
   and defensible, not a standards implementation.
 - The VLM is **advisory** and off by default.
